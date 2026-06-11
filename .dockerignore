@@ -1,0 +1,9 @@
+.git/
+target/
+.env
+.dockerignore
+Dockerfile
+third_party/
+*.md
+.gitignore
+AGENTS.md
