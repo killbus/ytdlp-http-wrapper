@@ -38,8 +38,8 @@ The service follows a **modular single-binary** pattern:
 ### File Layout
 
 | File | Responsibility |
-|---|---|
-| `src/main.rs` | Entrypoint: subscriber init, binary bootstrap, server start |
+|---|---|---|
+| `src/main.rs` | Entrypoint: clap config, subscriber init, binary bootstrap, server start |
 | `src/routes.rs` | Router factory with TraceLayer |
 | `src/executor.rs` | Arg validation, process spawn, timeout, response construction |
 | `src/models.rs` | `RunRequest`, `RunResponse`, `ErrorResponse` |
@@ -210,6 +210,7 @@ yt-dlp = "2.7.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tower-http = { version = "0.5", features = ["trace"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [patch.crates-io]
 lofty = { git = "https://github.com/boul2gom/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }
@@ -368,16 +369,30 @@ Linux arm64 is cross-compiled via `cross`; macOS/Windows targets compile nativel
 
 ---
 
-## 8. Environment Variables
+## 8. Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `HOST` | `127.0.0.1` | Bind address |
-| `PORT` | `8080` | Listen port |
-| `LIBS_DIR` | `libs` | yt-dlp download directory (relative to CWD) |
-| `RUST_LOG` | `info` | `EnvFilter` directive for tracing |
-| `DENIED_ARGS` | *(built-in list)* | JSON array of blocked arguments; `[]` allows all |
-| `SSL_CERT_FILE` | `/etc/ssl/certs/ca-certificates.crt` | (Docker only) Path to CA bundle |
+Configured via **environment variables** (Docker-friendly) or **CLI flags** (local dev). CLI flags take precedence when both are set.
+
+### 8.1 CLI Flags
+
+| Flag | Short | Env var | Default | Description |
+|---|---|---|---|---|
+| `--host` | — | `HOST` | `127.0.0.1` | Bind address |
+| `--port` | `-p` | `PORT` | `8080` | Listen port |
+| `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | yt-dlp download directory |
+| `--denied-args` | — | `DENIED_ARGS` | *(built-in list)* | JSON array of blocked args |
+| `--help` | `-h` | — | — | Show help and exit |
+
+### 8.2 Environment Variables (Reference)
+
+| Variable | Default | CLI equivalent | Description |
+|---|---|---|---|
+| `HOST` | `127.0.0.1` | `--host` | Bind address |
+| `PORT` | `8080` | `--port` | Listen port |
+| `LIBS_DIR` | `libs` | `--libs-dir` | yt-dlp download directory |
+| `RUST_LOG` | `info` | — | `EnvFilter` directive for tracing |
+| `DENIED_ARGS` | *(built-in list)* | `--denied-args` | JSON array of blocked arguments; `[]` allows all |
+| `SSL_CERT_FILE` | `/etc/ssl/certs/ca-certificates.crt` | — | (Docker only) Path to CA bundle |
 
 ---
 
@@ -387,8 +402,11 @@ Linux arm64 is cross-compiled via `cross`; macOS/Windows targets compile nativel
 # quick start
 scripts/dev.sh
 
-# with custom config
+# with custom config (env vars)
 HOST=0.0.0.0 PORT=3000 LIBS_DIR=/tmp/libs DENIED_ARGS='[]' RUST_LOG=debug scripts/dev.sh
+
+# with custom config (CLI flags)
+cargo run -- --host 0.0.0.0 -p 3000 -l /tmp/libs
 
 # CI validation (fmt + clippy + test)
 scripts/ci.sh

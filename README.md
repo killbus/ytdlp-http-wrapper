@@ -29,15 +29,23 @@ Response `200 OK`:
 
 ## Configuration
 
-| Env | Default | Description |
-|---|---|---|
-| `HOST` | `127.0.0.1` | Bind address |
-| `PORT` | `8080` | Listen port |
-| `LIBS_DIR` | `libs` | yt-dlp download directory |
-| `RUST_LOG` | `info` | Tracing level (EnvFilter) |
-| `DENIED_ARGS` | *(built-in list)* | Comma-separated args blacklist, `[]` to allow all |
+All options accept CLI flags (local dev) or environment variables (Docker). CLI flags take precedence.
 
-Run with `--help` to print all env vars.
+| Flag | Short | Env | Default | Description |
+|---|---|---|---|---|
+| `--host` | — | `HOST` | `127.0.0.1` | Bind address |
+| `--port` | `-p` | `PORT` | `8080` | Listen port |
+| `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | yt-dlp download directory |
+| `--denied-args` | — | `DENIED_ARGS` | *(built-in list)* | JSON blocklist; `[]` to allow all |
+| | | `RUST_LOG` | `info` | Tracing level (EnvFilter) |
+
+```bash
+# with CLI flags
+cargo run -- --host 0.0.0.0 -p 3000 -l /tmp/libs
+
+# with env vars (Docker style)
+HOST=0.0.0.0 PORT=3000 cargo run
+```
 
 ## Installation
 

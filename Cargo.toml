@@ -12,6 +12,7 @@ yt-dlp = "2.7.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tower-http = { version = "0.5", features = ["trace"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 [patch.crates-io]
 lofty = { git = "https://github.com/boul2gom/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }

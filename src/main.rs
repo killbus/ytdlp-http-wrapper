@@ -1,7 +1,8 @@
-use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use yt_dlp::client::deps::LibraryInstaller;
@@ -9,6 +10,43 @@ use yt_dlp::client::deps::LibraryInstaller;
 mod executor;
 mod models;
 mod routes;
+
+#[derive(Parser)]
+#[command(name = "ytdlp-http-wrapper", about = "HTTP wrapper for yt-dlp")]
+struct Cli {
+    #[arg(
+        long = "host",
+        env = "HOST",
+        default_value = "127.0.0.1",
+        help = "Server bind address"
+    )]
+    host: String,
+
+    #[arg(
+        short = 'p',
+        long = "port",
+        env = "PORT",
+        default_value = "8080",
+        help = "Server port"
+    )]
+    port: u16,
+
+    #[arg(
+        short = 'l',
+        long = "libs-dir",
+        env = "LIBS_DIR",
+        default_value = "libs",
+        help = "yt-dlp download directory"
+    )]
+    libs_dir: PathBuf,
+
+    #[arg(
+        long = "denied-args",
+        env = "DENIED_ARGS",
+        help = "JSON array of blocked arguments; empty array allows all"
+    )]
+    denied_args: Option<String>,
+}
 
 async fn install_with_retry(
     installer: &LibraryInstaller,
@@ -41,34 +79,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    if std::env::args().any(|a| a == "--help" || a == "-h") {
-        eprintln!("ytdlp-http-wrapper — HTTP wrapper for yt-dlp");
-        eprintln!();
-        eprintln!("Environment variables:");
-        eprintln!("  HOST        Server bind address (default: 127.0.0.1)");
-        eprintln!("  PORT        Server port (default: 8080)");
-        eprintln!("  LIBS_DIR    yt-dlp download directory (default: libs)");
-        eprintln!("  DENIED_ARGS Blocked argument patterns (default: built-in list)");
-        eprintln!("  RUST_LOG    Logging filter (default: info)");
-        return Ok(());
+    let cli = Cli::parse();
+    info!(
+        host = %cli.host,
+        port = cli.port,
+        libs_dir = %cli.libs_dir.display(),
+        "starting ytdlp-http-wrapper"
+    );
+
+    if let Some(ref denied) = cli.denied_args {
+        info!(denied_args = %denied, "DENIED_ARGS configured");
     }
 
-    let destination = env::var("LIBS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("libs"));
-
     info!("Bootstrapping yt-dlp dependency");
-    let installer = LibraryInstaller::new(destination.clone());
+    let installer = LibraryInstaller::new(cli.libs_dir);
     let ytdlp_binary_path = install_with_retry(&installer, 3).await?;
 
     info!(path = %ytdlp_binary_path.display(), "Dependency ready");
 
     let app = routes::app(ytdlp_binary_path);
 
-    let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
-
+    let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "HTTP server started");
     axum::serve(listener, app).await?;
