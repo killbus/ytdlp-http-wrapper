@@ -231,8 +231,20 @@ Multi-stage build: `rust:1.96-alpine` → `debian:bookworm-slim`.
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM rust:1.96-alpine AS builder
+FROM rust:1.96-alpine AS chef
+RUN cargo install cargo-chef --version 0.1.77 --locked
+
+FROM chef AS planner
 WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
@@ -279,7 +291,8 @@ Key design choices:
 
 | Choice | Rationale |
 |---|---|
-| `rust:1.96-alpine` builder | Produces statically-linked musl binary (portable across libcs) |
+| `rust:1.96-alpine` builder | Produces statically-linked musl binary; cargo-chef splits dep/app compilation for CI layer caching |
+| `cargo-chef` | Standard Rust Docker caching tool; `recipe.json` derived from Cargo.toml/lock only, dep layer stable across source changes |
 | `debian:bookworm-slim` runtime | Native glibc environment for yt-dlp PyInstaller binary (downloaded at runtime via `LibraryInstaller`) |
 | Deno from GitHub releases | Not available as a Debian package; TARGETARCH handles multi-arch |
 | `dumb-init` | Proper signal handling for subprocesses |
