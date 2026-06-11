@@ -41,7 +41,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let destination = PathBuf::from("libs");
+    if std::env::args().any(|a| a == "--help" || a == "-h") {
+        eprintln!("ytdlp-http-wrapper — HTTP wrapper for yt-dlp");
+        eprintln!();
+        eprintln!("Environment variables:");
+        eprintln!("  HOST        Server bind address (default: 127.0.0.1)");
+        eprintln!("  PORT        Server port (default: 8080)");
+        eprintln!("  LIBS_DIR    yt-dlp download directory (default: libs)");
+        eprintln!("  DENIED_ARGS Blocked argument patterns (default: built-in list)");
+        eprintln!("  RUST_LOG    Logging filter (default: info)");
+        return Ok(());
+    }
+
+    let destination = env::var("LIBS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("libs"));
 
     info!("Bootstrapping yt-dlp dependency");
     let installer = LibraryInstaller::new(destination.clone());

@@ -7,25 +7,40 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release && \
     cp target/release/ytdlp-http-wrapper /app/ytdlp-http-wrapper
 
-FROM alpine:3.24
+FROM debian:bookworm-slim
+
+ARG TARGETARCH
 
 RUN <<'EOF'
-# system user
-adduser -D -h /app -u 1001 app
+set -eux
 
-# dependencies
-apk update
-apk upgrade -a
-apk add --no-cache \
+# system user
+groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
+
+# build + runtime deps
+apt-get update
+apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     dumb-init \
     ffmpeg \
-    nghttp2 \
+    libnghttp2-14 \
     python3 \
+    unzip \
     zstd
-apk add --no-cache -X https://dl-cdn.alpinelinux.org/alpine/edge/community \
-    deno
-rm -rf /var/cache/apk/*
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+# deno (download, not a Debian package)
+case "$TARGETARCH" in
+    amd64) DENO_ARCH="x86_64" ;;
+    arm64) DENO_ARCH="aarch64" ;;
+    *) echo "unsupported arch: $TARGETARCH" && exit 1 ;;
+esac
+curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}-unknown-linux-gnu.zip" \
+    -o /tmp/deno.zip
+unzip /tmp/deno.zip -d /usr/local/bin/
+rm /tmp/deno.zip
 
 # directories
 mkdir -p /app /downloads /app/.cache

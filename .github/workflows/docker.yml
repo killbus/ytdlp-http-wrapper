@@ -75,8 +75,8 @@ jobs:
           push: true
           tags: ${{ steps.meta-ghcr.outputs.tags }}
           labels: ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=ytdlp-http
+          cache-to: type=gha,scope=ytdlp-http,mode=max
 
       - uses: docker/build-push-action@v7
         if: steps.check-dh.outputs.available == 'true'
@@ -86,4 +86,5 @@ jobs:
           push: true
           tags: ${{ steps.meta-dh.outputs.tags }}
           labels: ${{ steps.meta-dh.outputs.labels }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=ytdlp-http
+          cache-to: type=gha,scope=ytdlp-http,mode=max

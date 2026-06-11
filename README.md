@@ -33,8 +33,38 @@ Response `200 OK`:
 |---|---|---|
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `8080` | Listen port |
+| `LIBS_DIR` | `libs` | yt-dlp download directory |
 | `RUST_LOG` | `info` | Tracing level (EnvFilter) |
 | `DENIED_ARGS` | *(built-in list)* | Comma-separated args blacklist, `[]` to allow all |
+
+Run with `--help` to print all env vars.
+
+## Installation
+
+### Docker (recommended)
+
+```bash
+docker run -d -p 8080:8080 ghcr.io/killbus/ytdlp-http-wrapper
+```
+
+### Binary (Linux only)
+
+Download from [GitHub Releases](https://github.com/killbus/ytdlp-http-wrapper/releases):
+
+```bash
+curl -fsSL https://github.com/killbus/ytdlp-http-wrapper/releases/latest/download/ytdlp-http-wrapper-<tag>-x86_64-unknown-linux-gnu.tar.gz \
+  | tar xz
+./ytdlp-http-wrapper
+```
+
+macOS/Windows users should use the Docker image.
+
+## Development
+
+```bash
+scripts/dev.sh          # run locally
+scripts/ci.sh           # fmt + clippy + test
+```
 
 ## Build
 

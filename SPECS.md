@@ -227,35 +227,45 @@ On startup, `install_with_retry()` wraps `LibraryInstaller::install_youtube(None
 
 ### 6.1 Dockerfile
 
-Multi-stage build: `rust:1.96-slim-bookworm` → `alpine:3.21`.
+Multi-stage build: `rust:1.96-alpine` → `debian:bookworm-slim`.
 
 ```dockerfile
 # syntax=docker/dockerfile:1
-FROM rust:1.96-slim-bookworm AS builder
+FROM rust:1.96-alpine AS builder
 WORKDIR /app
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    cargo build --release
+    cargo build --release && \
+    cp target/release/ytdlp-http-wrapper /app/ytdlp-http-wrapper
 
-FROM alpine:3.21
+FROM debian:bookworm-slim
+ARG TARGETARCH
+
 RUN <<'EOF'
-adduser -D -h /app -u 1001 app
-apk update && apk upgrade -a
-apk add --no-cache \
-    ca-certificates \
-    dumb-init \
-    ffmpeg \
-    nghttp2 \
-    python3 \
-    zstd
-apk add --no-cache -X https://dl-cdn.alpinelinux.org/alpine/edge/community \
-    deno
-rm -rf /var/cache/apk/*
-mkdir -p /app libs /downloads /app/.cache
+set -eux
+groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
+apt-get update
+apt-get install -y --no-install-recommends \
+    ca-certificates curl dumb-init ffmpeg \
+    libnghttp2-14 python3 unzip zstd
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+case "$TARGETARCH" in
+    amd64) DENO_ARCH="x86_64" ;;
+    arm64) DENO_ARCH="aarch64" ;;
+    *) echo "unsupported arch: $TARGETARCH" && exit 1 ;;
+esac
+curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-$DENO_ARCH-unknown-linux-gnu.zip" -o /tmp/deno.zip
+unzip /tmp/deno.zip -d /usr/local/bin/
+rm /tmp/deno.zip
+
+mkdir -p /app /downloads /app/.cache
 chown -R app:app /app /downloads /app/.cache
 EOF
-COPY --link --from=builder /app/target/release/ytdlp-http-wrapper /app/ytdlp-http-wrapper
+
+COPY --link --from=builder /app/ytdlp-http-wrapper /app/ytdlp-http-wrapper
 USER app:app
 WORKDIR /downloads
 VOLUME ["/downloads"]
@@ -269,7 +279,9 @@ Key design choices:
 
 | Choice | Rationale |
 |---|---|
-| `alpine:3.21` runtime | Minimal image (~20 MB + deps) |
+| `rust:1.96-alpine` builder | Produces statically-linked musl binary (portable across libcs) |
+| `debian:bookworm-slim` runtime | Native glibc environment for yt-dlp PyInstaller binary (downloaded at runtime via `LibraryInstaller`) |
+| Deno from GitHub releases | Not available as a Debian package; TARGETARCH handles multi-arch |
 | `dumb-init` | Proper signal handling for subprocesses |
 | `USER app:app` (UID 1001) | Non-root with stable UID for volume mounts |
 | `ffmpeg` + `python3` + `deno` | yt-dlp runtime requirements |
@@ -277,9 +289,9 @@ Key design choices:
 | `COPY --link` | Independent layer, unaffected by preceding RUN |
 | ENV consolidated near ENTRYPOINT | Runtime-only, not consumed by build stages |
 
-### 6.2 Caveat: No Deno binary in Alpine (pre-3.22)
+### 6.2 Deno Installation
 
-The `deno` package is pulled from Alpine's `edge/community` repository. Alpine 3.22+ will include it in the main repository. This is a temporary workaround.
+Deno is downloaded from GitHub releases at build time, extracted from a zipped binary specific to `TARGETARCH`. This avoids depending on distribution-specific package availability.
 
 ### 6.3 .dockerignore
 
@@ -324,6 +336,23 @@ On push to `main` or tag `v*`:
 
 Requires secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_PASSWORD` for Docker Hub pushes. GHCR uses `secrets.GITHUB_TOKEN`.
 
+### Binary Release (`release.yml`)
+
+On tag `v*`:
+
+1. `taiki-e/create-gh-release-action` creates a GitHub Release
+2. `taiki-e/upload-rust-binary-action` compiles and uploads archives across 5 targets:
+
+| Target | Runner | Archive format |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | `ubuntu-latest` | `.tar.gz` |
+| `aarch64-unknown-linux-gnu` | `ubuntu-latest` | `.tar.gz` |
+| `x86_64-apple-darwin` | `macos-latest` | `.tar.gz` |
+| `aarch64-apple-darwin` | `macos-latest` | `.tar.gz` |
+| `x86_64-pc-windows-msvc` | `windows-latest` | `.zip` |
+
+Linux arm64 is cross-compiled via `cross`; macOS/Windows targets compile natively on their respective runners. Archives are named `ytdlp-http-wrapper-$tag-$target.{tar.gz,zip}`.
+
 ---
 
 ## 8. Environment Variables
@@ -332,6 +361,7 @@ Requires secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_PASSWORD` for Docker Hub pu
 |---|---|---|
 | `HOST` | `127.0.0.1` | Bind address |
 | `PORT` | `8080` | Listen port |
+| `LIBS_DIR` | `libs` | yt-dlp download directory (relative to CWD) |
 | `RUST_LOG` | `info` | `EnvFilter` directive for tracing |
 | `DENIED_ARGS` | *(built-in list)* | JSON array of blocked arguments; `[]` allows all |
 | `SSL_CERT_FILE` | `/etc/ssl/certs/ca-certificates.crt` | (Docker only) Path to CA bundle |
@@ -341,17 +371,20 @@ Requires secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_PASSWORD` for Docker Hub pu
 ## 9. Development
 
 ```bash
-# build and run natively
-cargo run
+# quick start
+scripts/dev.sh
 
 # with custom config
-HOST=0.0.0.0 PORT=3000 DENIED_ARGS='[]' RUST_LOG=debug cargo run
+HOST=0.0.0.0 PORT=3000 LIBS_DIR=/tmp/libs DENIED_ARGS='[]' RUST_LOG=debug scripts/dev.sh
+
+# CI validation (fmt + clippy + test)
+scripts/ci.sh
 
 # docker build
 docker build -t ytdlp-http-wrapper .
 
-# tests
+# natively
+cargo run
 cargo test
 cargo clippy -- -D warnings
-cargo fmt --check
 ```
