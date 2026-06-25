@@ -1,4 +1,5 @@
-use axum::{extract::Query, http::Request, routing::get, Json, Router};
+use axum::{http::Request, routing::get, Json, Router};
+use axum_extra::extract::Query;
 use std::path::PathBuf;
 use std::time::Duration;
 use tower_http::trace::TraceLayer;

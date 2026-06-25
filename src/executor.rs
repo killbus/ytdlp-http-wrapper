@@ -107,7 +107,10 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                     error: msg,
                     code: "ARG_REJECTED",
                 })
-                .expect("ErrorResponse serialization"),
+                .unwrap_or_else(|e| {
+                    error!(error = %e, "Failed to serialize ErrorResponse");
+                    serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                }),
             ),
         );
     }
@@ -131,7 +134,10 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                         error: format!("Failed to spawn yt-dlp process: {}", e),
                         code: "SPAWN_FAILURE",
                     })
-                    .expect("ErrorResponse serialization"),
+                    .unwrap_or_else(|e| {
+                        error!(error = %e, "Failed to serialize ErrorResponse");
+                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                    }),
                 ),
             );
         }
@@ -172,7 +178,10 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                         stdout,
                         stderr,
                     })
-                    .expect("RunResponse serialization"),
+                    .unwrap_or_else(|e| {
+                        error!(error = %e, "Failed to serialize RunResponse");
+                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                    }),
                 ),
             )
         }
@@ -189,7 +198,10 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                         error: format!("Failed to collect process output: {}", e),
                         code: "COLLECT_FAILURE",
                     })
-                    .expect("ErrorResponse serialization"),
+                    .unwrap_or_else(|e| {
+                        error!(error = %e, "Failed to serialize ErrorResponse");
+                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                    }),
                 ),
             )
         }
@@ -220,7 +232,10 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                         stdout,
                         stderr,
                     })
-                    .expect("RunResponse serialization"),
+                    .unwrap_or_else(|e| {
+                        error!(error = %e, "Failed to serialize RunResponse");
+                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                    }),
                 ),
             )
         }

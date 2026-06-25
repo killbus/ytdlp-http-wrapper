@@ -7,9 +7,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use yt_dlp::client::deps::LibraryInstaller;
 
-mod executor;
-mod models;
-mod routes;
+use ytdlp_http_wrapper::routes;
 
 #[derive(Parser)]
 #[command(name = "ytdlp-http-wrapper", about = "HTTP wrapper for yt-dlp")]
@@ -69,7 +67,9 @@ async fn install_with_retry(
             }
         }
     }
-    Err(last_err.unwrap().into())
+    Err(last_err
+        .map(Into::into)
+        .unwrap_or_else(|| "yt-dlp installer failed with no captured error".into()))
 }
 
 #[tokio::main]
