@@ -11,13 +11,9 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
 FROM chef AS builder
 WORKDIR /app
 COPY --from=planner /app/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release && \
+RUN cargo build --release && \
     cp target/release/ytdlp-http-wrapper /app/ytdlp-http-wrapper
 
 FROM debian:bookworm-slim
