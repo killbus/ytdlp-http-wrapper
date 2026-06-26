@@ -30,19 +30,25 @@ set -eux
 # system user
 groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app
 
-# build + runtime deps
+# runtime deps
 apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     dumb-init \
-    ffmpeg \
     libnghttp2-14 \
-    python3 \
     unzip \
-    zstd
+    xz-utils
 apt-get clean
-rm -rf /var/lib/apt/lists/*
+
+# static ffmpeg (musl-linked, zero shared library deps — no /usr/lib/* bloat)
+case "$TARGETARCH" in
+    amd64) FFMPEG_ARCH="amd64" ;;
+    arm64) FFMPEG_ARCH="arm64" ;;
+    *) echo "unsupported arch: $TARGETARCH" && exit 1 ;;
+esac
+curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${FFMPEG_ARCH}-static.tar.xz" \
+    | tar -xJ --wildcards --strip-components=1 -C /usr/local/bin/ '*/ffmpeg' '*/ffprobe'
 
 # deno (download, not a Debian package)
 case "$TARGETARCH" in
@@ -52,8 +58,12 @@ case "$TARGETARCH" in
 esac
 curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-${DENO_ARCH}-unknown-linux-gnu.zip" \
     -o /tmp/deno.zip
-unzip /tmp/deno.zip -d /usr/local/bin/
+unzip -j /tmp/deno.zip deno -d /usr/local/bin/
 rm /tmp/deno.zip
+
+# cleanup build-only packages
+apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false xz-utils unzip
+rm -rf /var/lib/apt/lists/*
 
 # directories
 mkdir -p /app /downloads /app/.cache
