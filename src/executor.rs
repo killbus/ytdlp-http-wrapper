@@ -4,12 +4,15 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::models::{ErrorResponse, RunRequest, RunResponse};
+
+// Output limit to prevent OOM (10MB)
+const MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024;
 
 fn default_denied_args() -> Vec<String> {
     vec![
@@ -81,15 +84,6 @@ fn redact_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-async fn read_pipe<R>(mut reader: R) -> String
-where
-    R: AsyncRead + Unpin,
-{
-    let mut buf = String::new();
-    let _ = reader.read_to_string(&mut buf).await;
-    buf
-}
-
 pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoResponse {
     let start = Instant::now();
 
@@ -121,6 +115,7 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
     cmd.args(&payload.args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
     let mut child = match cmd.spawn() {
@@ -143,24 +138,77 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
         }
     };
 
+    // Core fix: take stdout/stderr handles, spawn independent drain tasks
     let stdout_handle = child.stdout.take();
     let stderr_handle = child.stderr.take();
 
+    let stdout_task = tokio::spawn(async move {
+        match stdout_handle {
+            Some(reader) => {
+                // Cap reads to prevent OOM
+                let mut limited = reader.take(MAX_OUTPUT_BYTES);
+                let mut buf = Vec::new();
+                let _ = limited.read_to_end(&mut buf).await;
+
+                // Detect truncation and log warning
+                if buf.len() as u64 == MAX_OUTPUT_BYTES {
+                    warn!(
+                        "stdout reached limit of {} bytes and may be truncated",
+                        MAX_OUTPUT_BYTES
+                    );
+                }
+
+                String::from_utf8_lossy(&buf).into_owned()
+            }
+            None => String::new(),
+        }
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        match stderr_handle {
+            Some(reader) => {
+                // Cap reads to prevent OOM
+                let mut limited = reader.take(MAX_OUTPUT_BYTES);
+                let mut buf = Vec::new();
+                let _ = limited.read_to_end(&mut buf).await;
+
+                // Detect truncation and log warning
+                if buf.len() as u64 == MAX_OUTPUT_BYTES {
+                    warn!(
+                        "stderr reached limit of {} bytes and may be truncated",
+                        MAX_OUTPUT_BYTES
+                    );
+                }
+
+                String::from_utf8_lossy(&buf).into_owned()
+            }
+            None => String::new(),
+        }
+    });
+
+    // Wait for child exit with timeout
     let result = timeout(timeout_duration, child.wait()).await;
     let elapsed = start.elapsed();
 
+    // Core fix: explicitly kill on timeout to ensure pipe closure
+    if result.is_err() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+
+    // Pipes are closed (normal exit or kill), drain tasks are guaranteed to complete
+    let stdout = stdout_task.await.unwrap_or_else(|e| {
+        error!(error = %e, "stdout drain task panicked or was cancelled");
+        String::new()
+    });
+    let stderr = stderr_task.await.unwrap_or_else(|e| {
+        error!(error = %e, "stderr drain task panicked or was cancelled");
+        String::new()
+    });
+
     match result {
         Ok(Ok(status)) => {
-            let stdout = match stdout_handle {
-                Some(reader) => read_pipe(reader).await,
-                None => String::new(),
-            };
-            let stderr = match stderr_handle {
-                Some(reader) => read_pipe(reader).await,
-                None => String::new(),
-            };
             let exit_code = status.code().unwrap_or(-1);
-
             info!(
                 exit_code,
                 duration_ms = elapsed.as_millis() as u64,
@@ -169,7 +217,6 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
                 args = ?redact_args(&payload.args),
                 "yt-dlp completed"
             );
-
             (
                 StatusCode::OK,
                 Json(
@@ -206,21 +253,11 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
             )
         }
         Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-
-            let stdout = match stdout_handle {
-                Some(reader) => read_pipe(reader).await,
-                None => String::new(),
-            };
-            let stderr = match stderr_handle {
-                Some(reader) => read_pipe(reader).await,
-                None => String::new(),
-            };
-
             warn!(
                 duration_ms = elapsed.as_millis() as u64,
                 exit_code = -1,
+                stdout_len = stdout.len(),
+                stderr_len = stderr.len(),
                 args = ?redact_args(&payload.args),
                 "yt-dlp timed out"
             );
