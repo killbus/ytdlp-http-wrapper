@@ -1,15 +1,21 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use std::env;
-use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::models::{ErrorResponse, RunRequest, RunResponse};
+use crate::routes::AppState;
+
+#[cfg(windows)]
+use process_wrap::tokio::JobObject;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
+use process_wrap::tokio::{CommandWrap, KillOnDrop};
 
 // Output limit to prevent OOM (10MB)
 const MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024;
@@ -84,7 +90,7 @@ fn redact_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoResponse {
+pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResponse {
     let start = Instant::now();
 
     if let Err(msg) = reject_denied_args(&payload.args) {
@@ -111,14 +117,40 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
 
     let timeout_duration = Duration::from_secs(payload.timeout_seconds.unwrap_or(30).clamp(1, 300));
 
-    let mut cmd = Command::new(binary_path);
-    cmd.args(&payload.args);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
+    let _permit = match state.semaphore.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(e) => {
+            error!(error = %e, "Semaphore closed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::to_value(ErrorResponse {
+                        error: "Internal concurrency control failure".into(),
+                        code: "SEMAPHORE_CLOSED",
+                    })
+                    .unwrap_or_else(|e| {
+                        error!(error = %e, "Failed to serialize ErrorResponse");
+                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
+                    }),
+                ),
+            );
+        }
+    };
+
+    let mut wrap_cmd = CommandWrap::with_new(&state.binary_path, |cmd| {
+        cmd.args(&payload.args);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+    });
+    wrap_cmd.wrap(KillOnDrop);
+
+    #[cfg(unix)]
+    wrap_cmd.wrap(ProcessGroup::leader());
+
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000);
-    let mut child = match cmd.spawn() {
+    wrap_cmd.wrap(JobObject);
+
+    let mut child = match wrap_cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "Failed to spawn yt-dlp");
@@ -139,8 +171,8 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
     };
 
     // Core fix: take stdout/stderr handles, spawn independent drain tasks
-    let stdout_handle = child.stdout.take();
-    let stderr_handle = child.stderr.take();
+    let stdout_handle = child.stdout().take();
+    let stderr_handle = child.stderr().take();
 
     let stdout_task = tokio::spawn(async move {
         match stdout_handle {
@@ -192,7 +224,7 @@ pub async fn execute(payload: RunRequest, binary_path: &PathBuf) -> impl IntoRes
 
     // Core fix: explicitly kill on timeout to ensure pipe closure
     if result.is_err() {
-        let _ = child.kill().await;
+        let _ = child.start_kill();
         let _ = child.wait().await;
     }
 

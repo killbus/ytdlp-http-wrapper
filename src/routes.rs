@@ -1,25 +1,38 @@
-use axum::{http::Request, routing::get, Json, Router};
+use axum::extract::State;
+use axum::{http::Request, response::IntoResponse, routing::get, Json, Router};
 use axum_extra::extract::Query;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 
 use crate::executor;
 use crate::models::RunRequest;
 
-pub fn app(binary_path: PathBuf) -> Router {
-    let path_for_get = binary_path.clone();
+pub struct AppState {
+    pub binary_path: PathBuf,
+    pub semaphore: Arc<Semaphore>,
+}
+
+async fn run_get(
+    State(state): State<Arc<AppState>>,
+    Query(payload): Query<RunRequest>,
+) -> impl IntoResponse {
+    executor::execute(payload, state).await
+}
+
+async fn run_post(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<RunRequest>,
+) -> impl IntoResponse {
+    executor::execute(payload, state).await
+}
+
+pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
-        .route(
-            "/run",
-            get(move |query: Query<RunRequest>| async move {
-                executor::execute(query.0, &path_for_get).await
-            })
-            .post(move |Json(payload): Json<RunRequest>| async move {
-                executor::execute(payload, &binary_path).await
-            }),
-        )
+        .route("/run", get(run_get).post(run_post))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &Request<_>| {
@@ -36,4 +49,5 @@ pub fn app(binary_path: PathBuf) -> Router {
                     },
                 ),
         )
+        .with_state(state)
 }

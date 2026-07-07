@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use yt_dlp::client::deps::LibraryInstaller;
@@ -37,6 +39,13 @@ struct Cli {
         help = "yt-dlp download directory"
     )]
     libs_dir: PathBuf,
+
+    #[arg(
+        long = "max-concurrent",
+        env = "MAX_CONCURRENT_PROCESSES",
+        help = "Max concurrent yt-dlp processes"
+    )]
+    max_concurrent: Option<usize>,
 
     #[arg(
         long = "denied-args",
@@ -97,7 +106,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(path = %ytdlp_binary_path.display(), "Dependency ready");
 
-    let app = routes::app(ytdlp_binary_path);
+    let max_concurrent = cli.max_concurrent.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get() * 2)
+            .unwrap_or(8)
+    });
+    info!(max_concurrent, "Semaphore limit set");
+
+    let app_state = Arc::new(routes::AppState {
+        binary_path: ytdlp_binary_path,
+        semaphore: Arc::new(Semaphore::new(max_concurrent)),
+    });
+
+    let app = routes::app(app_state);
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;

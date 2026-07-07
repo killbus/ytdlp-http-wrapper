@@ -36,6 +36,7 @@ All options accept CLI flags (local dev) or environment variables (Docker). CLI 
 | `--host` | — | `HOST` | `127.0.0.1` | Bind address |
 | `--port` | `-p` | `PORT` | `8080` | Listen port |
 | `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | yt-dlp download directory |
+| `--max-concurrent` | — | `MAX_CONCURRENT_PROCESSES` | CPU×2 | Max concurrent yt-dlp processes |
 | `--denied-args` | — | `DENIED_ARGS` | *(built-in list)* | JSON blocklist; `[]` to allow all |
 | | | `RUST_LOG` | `info` | Tracing level (EnvFilter) |
 
