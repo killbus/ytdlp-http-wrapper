@@ -1,3 +1,9 @@
+> Historical architecture snapshot. Wrapper lifecycle claims below are superseded
+> by [the root wrapper lifecycle contract](../../wrapper/backend/process-lifecycle.md).
+> In particular: Unix KillOnDrop alone does not kill a process group; shutdown is
+> now explicit; the actual concurrency key is MAX_CONCURRENT_PROCESSES. Do not
+> use the old shutdown invariant or take(10MB) pattern as implementation guidance.
+
 # Service Architecture: ytdlp-http-wrapper
 
 > Status: 🏗️ Specifying

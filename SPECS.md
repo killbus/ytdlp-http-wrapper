@@ -4,44 +4,30 @@ Lightweight HTTP wrapper service that bootstraps a `yt-dlp` binary at startup an
 
 ---
 
+Current lifecycle/configuration details: [process lifecycle operations](docs/process-lifecycle.md) and [wrapper code-spec](.trellis/spec/wrapper/backend/process-lifecycle.md).
+
 ## 1. Architecture
 
 The service follows a **modular single-binary** pattern:
 
-```
-┌─ main.rs ──────────────────────────────────────────────┐
-│  tracing_subscriber::fmt().json()                      │
-│  LibraryInstaller → download yt-dlp to ./libs/         │
-│     retry x3 with exponential backoff                  │
-│  routes::app(binary_path) → axum::serve               │
-└─────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─ routes.rs ───────────────────────────────────────────┐
-│  Router::new().route("/run", get + post)               │
-│  .layer(TraceLayer::new_for_http())                    │
-└────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─ executor.rs ─────────────────────────────────────────┐
-│  reject_denied_args → 422 if blocked                  │
-│  Command::new(binary).args(args).spawn()              │
-│  stdout/stderr → take before wait                     │
-│  timeout(duration, child.wait())                      │
-│  on timeout: child.kill() + child.wait() to reap      │
-│  redact_args for logs                                 │
-│  #[cfg(windows)] creation_flags(0x08000000)           │
-│  → (StatusCode, Json<RunResponse | ErrorResponse>)    │
-└────────────────────────────────────────────────────────┘
+```text
+main: configure -> bootstrap -> serve -> signal/cancellation -> graceful shutdown
+routes: GET/POST /run -> executor
+executor: validate -> acquire permit -> tracked supervisor -> JSON response
+supervisor: private TempDir -> process group/job -> concurrent bounded drains
+  completion: terminate remaining descendants -> reap -> remove TempDir -> release permit
+  timeout/cancel: Unix SIGTERM (3s) -> group/job kill -> bounded cleanup (2s)
+  cleanup failure: close admission, preserve uncertain resources, report error
 ```
 
 ### File Layout
 
 | File | Responsibility |
-|---|---|---|
+|---|---|
 | `src/main.rs` | Entrypoint: clap config, subscriber init, binary bootstrap, server start |
 | `src/routes.rs` | Router factory with TraceLayer |
-| `src/executor.rs` | Arg validation, process spawn, timeout, response construction |
+| `src/executor.rs` | Arg validation, admission, supervisor dispatch, response construction |
+| `src/supervisor.rs` | Process ownership, deadlines, temporary storage and cleanup |
 | `src/models.rs` | `RunRequest`, `RunResponse`, `ErrorResponse` |
 
 ### Runtime Dependencies (system PATH)
@@ -90,9 +76,9 @@ GET /run?args=-g&args=-f&args=bestaudio&args=https%3A%2F%2Fwww.youtube.com%2Fwat
 { "exit_code": 0, "stdout": "https://rr3---sn-...", "stderr": "" }
 ```
 
-On timeout:
+On timeout (captured output is preserved; no synthetic stderr is appended):
 ```json
-{ "exit_code": -1, "stdout": "", "stderr": "ERROR: Command execution timed out" }
+{ "exit_code": -1, "stdout": "", "stderr": "" }
 ```
 
 #### Error Response (422 Unprocessable Entity)
@@ -109,12 +95,16 @@ Returned when one or more arguments match the `DENIED_ARGS` blocklist.
 
 #### Error Response (500 Internal Server Error)
 
-Returned when process spawn or output collection fails.
+Returned when process spawn, output collection, or resource cleanup fails. Cleanup failures close admission; shutdown queues return HTTP 503 with code SHUTTING_DOWN. See [lifecycle operations](docs/process-lifecycle.md) for deadlines and storage guarantees.
 
 | `code` | Meaning |
 |---|---|
 | `SPAWN_FAILURE` | Failed to spawn yt-dlp process |
 | `COLLECT_FAILURE` | Failed to read process output |
+| `TEMP_FAILURE` | Failed to create/resolve request temporary storage |
+| `CLEANUP_FAILURE` | Process/pipe cleanup failed or exceeded its deadline |
+| `TEMP_CLEANUP_FAILURE` | Owned directory removal failed |
+| `SUPERVISOR_FAILURE` | Supervisor terminated without a response |
 
 ```json
 { "error": "Failed to spawn yt-dlp process: ...", "code": "SPAWN_FAILURE" }
@@ -328,9 +318,10 @@ Prevents build context bloat and accidental leakage.
 On push/PR to `main`:
 
 1. `cargo fmt --check`
-2. `cargo clippy -- -D warnings`
-3. `cargo test`
-4. Docker build (BuildKit, GHA cache, load to local)
+2. `cargo clippy --locked --all-targets -- -D warnings`
+3. `cargo test --locked` and `cargo build --locked --release` on Linux and Windows
+4. Official Linux yt-dlp onefile smoke test after release checksum verification
+5. Docker build and Compose tmpfs runtime checks (non-root permissions, execution, capacity and mount options)
 
 ### Docker Push (`docker.yml`)
 
@@ -380,6 +371,8 @@ Configured via **environment variables** (Docker-friendly) or **CLI flags** (loc
 | `--host` | — | `HOST` | `127.0.0.1` | Bind address |
 | `--port` | `-p` | `PORT` | `8080` | Listen port |
 | `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | yt-dlp download directory |
+| `--max-concurrent` | — | `MAX_CONCURRENT_PROCESSES` | CPU×2 | Max concurrent yt-dlp processes; must be positive |
+| `--temp-dir` | — | `YTDLP_TEMP_DIR` | OS temp directory | Existing parent for private request temporary directories |
 | `--denied-args` | — | `DENIED_ARGS` | *(built-in list)* | JSON array of blocked args |
 | `--help` | `-h` | — | — | Show help and exit |
 
@@ -390,6 +383,8 @@ Configured via **environment variables** (Docker-friendly) or **CLI flags** (loc
 | `HOST` | `127.0.0.1` | `--host` | Bind address |
 | `PORT` | `8080` | `--port` | Listen port |
 | `LIBS_DIR` | `libs` | `--libs-dir` | yt-dlp download directory |
+| `MAX_CONCURRENT_PROCESSES` | CPU×2 | `--max-concurrent` | Max concurrent yt-dlp processes |
+| `YTDLP_TEMP_DIR` | OS temp directory | `--temp-dir` | Existing temporary parent, validated before dependency bootstrap |
 | `RUST_LOG` | `info` | — | `EnvFilter` directive for tracing |
 | `DENIED_ARGS` | *(built-in list)* | `--denied-args` | JSON array of blocked arguments; `[]` allows all |
 | `SSL_CERT_FILE` | `/etc/ssl/certs/ca-certificates.crt` | — | (Docker only) Path to CA bundle |

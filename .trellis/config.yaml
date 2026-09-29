@@ -111,6 +111,8 @@ channel:
 
 # Auto-detected monorepo packages
 packages:
+  wrapper:
+    path: .
   mpd:
     path: third_party/mpd
     git: true

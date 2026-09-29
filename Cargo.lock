@@ -1365,7 +1365,7 @@ dependencies = [
 [[package]]
 name = "lofty"
 version = "0.23.3"
-source = "git+https://github.com/boul2gom/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
+source = "git+https://github.com/Serial-ATA/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
 dependencies = [
  "byteorder",
  "data-encoding",
@@ -1379,7 +1379,7 @@ dependencies = [
 [[package]]
 name = "lofty_attr"
 version = "0.12.0"
-source = "git+https://github.com/boul2gom/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
+source = "git+https://github.com/Serial-ATA/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1550,7 +1550,7 @@ dependencies = [
 [[package]]
 name = "ogg_pager"
 version = "0.7.1"
-source = "git+https://github.com/boul2gom/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
+source = "git+https://github.com/Serial-ATA/lofty-rs?rev=d2e41640481a48a95303d95939ba831767afcec8#d2e41640481a48a95303d95939ba831767afcec8"
 dependencies = [
  "byteorder",
 ]
@@ -2610,6 +2610,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -3531,10 +3532,13 @@ dependencies = [
  "axum-extra",
  "clap",
  "http-body-util",
+ "nix",
  "process-wrap",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-util",
  "tower 0.4.13",
  "tower-http 0.5.2",
  "tracing",

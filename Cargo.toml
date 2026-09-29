@@ -15,6 +15,11 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tower-http = { version = "0.5", features = ["trace"] }
 clap = { version = "4", features = ["derive", "env"] }
 process-wrap = { version = "9.1.0", features = ["tokio1"] }
+tempfile = "3.27"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
@@ -29,4 +34,5 @@ expect_used = "warn"
 enum_glob_use = "deny"
 
 [patch.crates-io]
-lofty = { git = "https://github.com/boul2gom/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }
+# Preserve yt-dlp's pastey fix while using the public upstream Git source.
+lofty = { git = "https://github.com/Serial-ATA/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }

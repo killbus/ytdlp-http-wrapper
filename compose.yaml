@@ -1,0 +1,20 @@
+services:
+  ytdlp:
+    image: ytdlp-http-wrapper:local
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      HOST: 0.0.0.0
+      MAX_CONCURRENT_PROCESSES: "4"
+      YTDLP_TEMP_DIR: /tmp
+      RUST_LOG: info
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=512m,mode=1777
+    mem_limit: 1g
+    stop_grace_period: 15s
+    volumes:
+      - downloads:/downloads
+
+volumes:
+  downloads:

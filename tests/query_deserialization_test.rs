@@ -6,16 +6,17 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+
 use tower::ServiceExt;
 use ytdlp_http_wrapper::routes;
 
 #[tokio::test]
 async fn test_get_run_deserialization() {
-    let state = Arc::new(routes::AppState {
-        binary_path: PathBuf::from("non_existent_ytdlp_binary"),
-        semaphore: Arc::new(Semaphore::new(8)),
-    });
+    let state = Arc::new(routes::AppState::new(
+        PathBuf::from("non_existent_ytdlp_binary"),
+        8,
+        None,
+    ));
     let app = routes::app(state);
 
     // 1. 单参数: GET /run?args=--update
