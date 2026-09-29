@@ -98,8 +98,11 @@ teardown. Unix waits for group disappearance and requires a working init reaper.
 - Local fmt, all-target Clippy, 10 Windows lifecycle tests and the GET query test
   passed against the newly fetched source. Release build returned success when
   its session was checked for cancellation after the user requested CI-only heavy
-  work. No further local heavy builds/tests will be started.
-- User instruction: "走 ci 构建，不在本地进行重任务。" Continue by updating the
-  existing PR branch and validating Windows/Linux/Docker in CI.
+  work. No further local heavy builds/tests were started.
+- Commit c65124de1230315037c4057c292092042ded127f was pushed to the existing PR
+  branch and CI run 36551216910 completed successfully on rust (ubuntu-latest),
+  rust (windows-latest) and docker. Dependency fetching is repaired; Linux
+  lifecycle and container runtime checks must still be read as completed by the
+  CI jobs, not by local execution.
 - Automatic approval review intermittently failed with rate-limit/channel
   errors. These commands were not executed; retry review instead of bypassing it.
