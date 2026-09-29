@@ -1,24 +1,12 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use std::env;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
-use tokio::time::timeout;
-use tracing::{error, info, warn};
+use std::time::Duration;
+use tracing::warn;
 
-use crate::models::{ErrorResponse, RunRequest, RunResponse};
+use crate::models::{ErrorResponse, RunRequest};
 use crate::routes::AppState;
-
-#[cfg(windows)]
-use process_wrap::tokio::JobObject;
-#[cfg(unix)]
-use process_wrap::tokio::ProcessGroup;
-use process_wrap::tokio::{CommandWrap, KillOnDrop};
-
-// Output limit to prevent OOM (10MB)
-const MAX_OUTPUT_BYTES: u64 = 10 * 1024 * 1024;
 
 fn default_denied_args() -> Vec<String> {
     vec![
@@ -91,222 +79,55 @@ fn redact_args(args: &[String]) -> Vec<String> {
 }
 
 pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResponse {
-    let start = Instant::now();
-
-    if let Err(msg) = reject_denied_args(&payload.args) {
-        warn!(
-            log_type = "audit",
-            args = ?redact_args(&payload.args),
-            timeout_seconds = payload.timeout_seconds,
-            "{}", msg
-        );
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(
-                serde_json::to_value(ErrorResponse {
-                    error: msg,
-                    code: "ARG_REJECTED",
-                })
-                .unwrap_or_else(|e| {
-                    error!(error = %e, "Failed to serialize ErrorResponse");
-                    serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                }),
-            ),
-        );
+    if let Err(message) = reject_denied_args(&payload.args) {
+        warn!(log_type = "audit", args = ?redact_args(&payload.args), "{}", message);
+        return failure(StatusCode::UNPROCESSABLE_ENTITY, "ARG_REJECTED", message);
     }
-
-    let timeout_duration = Duration::from_secs(payload.timeout_seconds.unwrap_or(30).clamp(1, 300));
-
-    let _permit = match state.semaphore.clone().acquire_owned().await {
-        Ok(p) => p,
-        Err(e) => {
-            error!(error = %e, "Semaphore closed");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(ErrorResponse {
-                        error: "Internal concurrency control failure".into(),
-                        code: "SEMAPHORE_CLOSED",
-                    })
-                    .unwrap_or_else(|e| {
-                        error!(error = %e, "Failed to serialize ErrorResponse");
-                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                    }),
-                ),
-            );
-        }
-    };
-
-    let mut wrap_cmd = CommandWrap::with_new(&state.binary_path, |cmd| {
-        cmd.args(&payload.args);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-    });
-    wrap_cmd.wrap(KillOnDrop);
-
-    #[cfg(unix)]
-    wrap_cmd.wrap(ProcessGroup::leader());
-
-    #[cfg(windows)]
-    wrap_cmd.wrap(JobObject);
-
-    let mut child = match wrap_cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            error!(error = %e, "Failed to spawn yt-dlp");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(ErrorResponse {
-                        error: format!("Failed to spawn yt-dlp process: {}", e),
-                        code: "SPAWN_FAILURE",
-                    })
-                    .unwrap_or_else(|e| {
-                        error!(error = %e, "Failed to serialize ErrorResponse");
-                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                    }),
-                ),
-            );
-        }
-    };
-
-    // Core fix: take stdout/stderr handles, spawn independent drain tasks
-    let stdout_handle = child.stdout().take();
-    let stderr_handle = child.stderr().take();
-
-    let stdout_task = tokio::spawn(async move {
-        match stdout_handle {
-            Some(reader) => {
-                // Cap reads to prevent OOM
-                let mut limited = reader.take(MAX_OUTPUT_BYTES);
-                let mut buf = Vec::new();
-                let _ = limited.read_to_end(&mut buf).await;
-
-                // Detect truncation and log warning
-                if buf.len() as u64 == MAX_OUTPUT_BYTES {
-                    warn!(
-                        "stdout reached limit of {} bytes and may be truncated",
-                        MAX_OUTPUT_BYTES
-                    );
-                }
-
-                String::from_utf8_lossy(&buf).into_owned()
-            }
-            None => String::new(),
-        }
-    });
-
-    let stderr_task = tokio::spawn(async move {
-        match stderr_handle {
-            Some(reader) => {
-                // Cap reads to prevent OOM
-                let mut limited = reader.take(MAX_OUTPUT_BYTES);
-                let mut buf = Vec::new();
-                let _ = limited.read_to_end(&mut buf).await;
-
-                // Detect truncation and log warning
-                if buf.len() as u64 == MAX_OUTPUT_BYTES {
-                    warn!(
-                        "stderr reached limit of {} bytes and may be truncated",
-                        MAX_OUTPUT_BYTES
-                    );
-                }
-
-                String::from_utf8_lossy(&buf).into_owned()
-            }
-            None => String::new(),
-        }
-    });
-
-    // Wait for child exit with timeout
-    let result = timeout(timeout_duration, child.wait()).await;
-    let elapsed = start.elapsed();
-
-    // Core fix: explicitly kill on timeout to ensure pipe closure
-    if result.is_err() {
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-    }
-
-    // Pipes are closed (normal exit or kill), drain tasks are guaranteed to complete
-    let stdout = stdout_task.await.unwrap_or_else(|e| {
-        error!(error = %e, "stdout drain task panicked or was cancelled");
-        String::new()
-    });
-    let stderr = stderr_task.await.unwrap_or_else(|e| {
-        error!(error = %e, "stderr drain task panicked or was cancelled");
-        String::new()
-    });
-
-    match result {
-        Ok(Ok(status)) => {
-            let exit_code = status.code().unwrap_or(-1);
-            info!(
-                exit_code,
-                duration_ms = elapsed.as_millis() as u64,
-                stdout_len = stdout.len(),
-                stderr_len = stderr.len(),
-                args = ?redact_args(&payload.args),
-                "yt-dlp completed"
-            );
-            (
-                StatusCode::OK,
-                Json(
-                    serde_json::to_value(RunResponse {
-                        exit_code,
-                        stdout,
-                        stderr,
-                    })
-                    .unwrap_or_else(|e| {
-                        error!(error = %e, "Failed to serialize RunResponse");
-                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                    }),
-                ),
-            )
-        }
-        Ok(Err(e)) => {
-            error!(
-                error = %e,
-                duration_ms = elapsed.as_millis() as u64,
-                "Failed to collect yt-dlp output"
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::to_value(ErrorResponse {
-                        error: format!("Failed to collect process output: {}", e),
-                        code: "COLLECT_FAILURE",
-                    })
-                    .unwrap_or_else(|e| {
-                        error!(error = %e, "Failed to serialize ErrorResponse");
-                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                    }),
-                ),
-            )
-        }
+    let duration = Duration::from_secs(payload.timeout_seconds.unwrap_or(30).clamp(1, 300));
+    let permit = match state.semaphore.clone().acquire_owned().await {
+        Ok(permit) => permit,
         Err(_) => {
-            warn!(
-                duration_ms = elapsed.as_millis() as u64,
-                exit_code = -1,
-                stdout_len = stdout.len(),
-                stderr_len = stderr.len(),
-                args = ?redact_args(&payload.args),
-                "yt-dlp timed out"
-            );
-            (
-                StatusCode::OK,
-                Json(
-                    serde_json::to_value(RunResponse {
-                        exit_code: -1,
-                        stdout,
-                        stderr,
-                    })
-                    .unwrap_or_else(|e| {
-                        error!(error = %e, "Failed to serialize RunResponse");
-                        serde_json::json!({"error": "internal serialization error", "code": "INTERNAL"})
-                    }),
-                ),
+            return failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SHUTTING_DOWN",
+                "Service is shutting down".into(),
             )
         }
+    };
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    state.tasks.spawn(crate::supervisor::supervise(
+        payload.args,
+        duration,
+        state.clone(),
+        permit,
+        sender,
+    ));
+    match receiver.await {
+        Ok(Ok(response)) => (StatusCode::OK, Json(serde_json::json!(response))),
+        Ok(Err(e)) => failure(
+            if e.code == "SHUTTING_DOWN" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            },
+            e.code,
+            e.message,
+        ),
+        Err(e) => failure(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "SUPERVISOR_FAILURE",
+            e.to_string(),
+        ),
     }
+}
+
+fn failure(
+    status: StatusCode,
+    code: &'static str,
+    error: String,
+) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        status,
+        Json(serde_json::json!(ErrorResponse { error, code })),
+    )
 }

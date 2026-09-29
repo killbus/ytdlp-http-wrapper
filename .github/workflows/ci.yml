@@ -15,7 +15,11 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -27,8 +31,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+
+      - name: Verify and exercise official Linux onefile
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          YTDLP_SMOKE_BINARY: ${{ runner.temp }}/yt-dlp-smoke/yt-dlp_linux
+        run: |
+          release=$(gh release view --repo yt-dlp/yt-dlp --json tagName --jq .tagName)
+          echo "Testing yt-dlp release $release"
+          gh release download "$release" --repo yt-dlp/yt-dlp --pattern yt-dlp_linux --pattern SHA2-256SUMS --dir "$(dirname "$YTDLP_SMOKE_BINARY")"
+          (cd "$(dirname "$YTDLP_SMOKE_BINARY")" && sha256sum --check --ignore-missing SHA2-256SUMS)
+          chmod +x "$YTDLP_SMOKE_BINARY"
+          bash scripts/linux-smoke.sh
 
   docker:
     runs-on: ubuntu-latest
@@ -42,4 +60,10 @@ jobs:
           --cache-from=type=gha
           --cache-to=type=gha,mode=max
           --load
+          --tag ytdlp-http-wrapper:local
           .
+
+      - name: Check Compose configuration and tmpfs containment
+        run: |
+          docker compose config --quiet
+          docker compose run --rm --no-deps -T --entrypoint /bin/sh ytdlp -eu < scripts/container-smoke.sh

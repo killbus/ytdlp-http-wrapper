@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 
@@ -14,6 +15,36 @@ use crate::models::RunRequest;
 pub struct AppState {
     pub binary_path: PathBuf,
     pub semaphore: Arc<Semaphore>,
+    pub temp_dir: Option<PathBuf>,
+    pub(crate) shutdown: CancellationToken,
+    pub(crate) tasks: TaskTracker,
+}
+
+impl AppState {
+    pub fn new(binary_path: PathBuf, max_concurrent: usize, temp_dir: Option<PathBuf>) -> Self {
+        Self {
+            binary_path,
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            temp_dir,
+            shutdown: CancellationToken::new(),
+            tasks: TaskTracker::new(),
+        }
+    }
+
+    pub fn begin_shutdown(&self) {
+        self.semaphore.close();
+        self.shutdown.cancel();
+    }
+
+    pub async fn shutdown_requested(&self) {
+        self.shutdown.cancelled().await;
+    }
+
+    /// Call after the HTTP server has stopped admitting handlers.
+    pub async fn wait_for_cleanup(&self) {
+        self.tasks.close();
+        self.tasks.wait().await;
+    }
 }
 
 async fn run_get(
