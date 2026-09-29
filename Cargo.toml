@@ -34,4 +34,5 @@ expect_used = "warn"
 enum_glob_use = "deny"
 
 [patch.crates-io]
-lofty = { git = "https://github.com/boul2gom/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }
+# Preserve yt-dlp's pastey fix while using the public upstream Git source.
+lofty = { git = "https://github.com/Serial-ATA/lofty-rs", rev = "d2e41640481a48a95303d95939ba831767afcec8" }
