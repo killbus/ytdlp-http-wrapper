@@ -11,6 +11,8 @@ concurrency:
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       upload_url: ${{ steps.create.outputs.upload_url }}
     steps:
@@ -22,6 +24,8 @@ jobs:
 
   upload-binaries:
     needs: create-release
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
