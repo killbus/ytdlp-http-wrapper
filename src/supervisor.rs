@@ -129,8 +129,10 @@ async fn wait_for_group(pgid: i32) -> io::Result<()> {
 }
 
 pub(crate) async fn supervise(
+    request_id: String,
     args: Vec<String>,
     duration: Duration,
+    queue_ms: u64,
     state: Arc<AppState>,
     permit: OwnedSemaphorePermit,
     mut reply: oneshot::Sender<Reply>,
@@ -144,14 +146,29 @@ pub(crate) async fn supervise(
         finished: false,
         kill_sent: false,
     };
-    let result = run(&args, duration, &mut resources, &mut reply).await;
+    let result = run(&request_id, &args, duration, &mut resources, &mut reply).await;
+    let result_kind = match &result {
+        Ok(response) if response.exit_code == -1 => "interrupted",
+        Ok(_) => "completed",
+        Err(failure) => failure.code,
+    };
     info!(
-        duration_ms = started.elapsed().as_millis() as u64,
+        request_id = %request_id,
+        backend = "cli",
+        queue_ms,
+        supervisor_ms = started.elapsed().as_millis() as u64,
+        result = result_kind,
         success = result.is_ok(),
         "yt-dlp supervision finished (including cleanup)"
     );
     if let Err(failure) = &result {
-        error!(code = failure.code, error = %failure.message, "yt-dlp supervision failed");
+        error!(
+            request_id = %request_id,
+            backend = "cli",
+            code = failure.code,
+            error = %failure.message,
+            "yt-dlp supervision failed"
+        );
     }
     // Release the permit before publishing the response, but only after cleanup.
     drop(resources);
@@ -159,13 +176,22 @@ pub(crate) async fn supervise(
 }
 
 async fn run(
+    request_id: &str,
     args: &[String],
     duration: Duration,
     resources: &mut Resources,
     reply: &mut oneshot::Sender<Reply>,
 ) -> Reply {
+    let acquisition_started = Instant::now();
     if resources.state.shutdown.is_cancelled() || reply.is_closed() {
         resources.finished = true;
+        info!(
+            request_id,
+            backend = "cli",
+            acquisition_ms = acquisition_started.elapsed().as_millis() as u64,
+            result = "shutting_down",
+            "CLI backend acquisition stopped before process start"
+        );
         return Err(Failure::new(
             "SHUTTING_DOWN",
             "Request cancelled before process start",
@@ -209,9 +235,18 @@ async fn run(
         Ok(child) => resources.child = Some(child),
         Err(e) => {
             close_temp(resources)?;
+            info!(
+                request_id,
+                backend = "cli",
+                acquisition_ms = acquisition_started.elapsed().as_millis() as u64,
+                result = "spawn_failure",
+                "CLI backend acquisition failed"
+            );
             return Err(Failure::new("SPAWN_FAILURE", e));
         }
     }
+    let acquisition_ms = acquisition_started.elapsed().as_millis() as u64;
+    let execution_started = Instant::now();
     let child = resources
         .child
         .as_mut()
@@ -235,13 +270,25 @@ async fn run(
         },
     };
     let interrupted = completed.is_none();
+    let execution_ms = execution_started.elapsed().as_millis() as u64;
+    let cleanup_started = Instant::now();
     if interrupted {
-        warn!(reason, "Terminating yt-dlp process tree");
+        warn!(
+            request_id,
+            backend = "cli",
+            reason,
+            "Terminating yt-dlp process tree"
+        );
         #[cfg(unix)]
         {
             if let Err(e) = child.signal(nix::sys::signal::Signal::SIGTERM as i32) {
                 if e.raw_os_error() != Some(nix::errno::Errno::ESRCH as i32) {
-                    warn!(error = %e, "SIGTERM failed; escalating");
+                    warn!(
+                        request_id,
+                        backend = "cli",
+                        error = %e,
+                        "SIGTERM failed; escalating"
+                    );
                 }
             }
             let _ = timeout(TERMINATION_GRACE, async {
@@ -288,6 +335,8 @@ async fn run(
     };
     if stdout.truncated || stderr.truncated {
         warn!(
+            request_id,
+            backend = "cli",
             stdout_truncated = stdout.truncated,
             stderr_truncated = stderr.truncated,
             limit = MAX_OUTPUT_BYTES,
@@ -296,6 +345,17 @@ async fn run(
     }
     resources.child.take();
     close_temp(resources)?;
+    info!(
+        request_id,
+        backend = "cli",
+        acquisition_ms,
+        execution_ms,
+        cleanup_ms = cleanup_started.elapsed().as_millis() as u64,
+        result = reason,
+        reason,
+        interrupted,
+        "yt-dlp execution phases completed"
+    );
     if let Some(Err(e)) = completed {
         return Err(Failure::new("COLLECT_FAILURE", e));
     }

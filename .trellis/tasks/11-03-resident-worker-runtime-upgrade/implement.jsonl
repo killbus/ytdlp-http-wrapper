@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/wrapper/backend/index.md", "reason": "Owns wrapper API, output-cap, safety, tracing, and CI requirements."}
+{"file": ".trellis/spec/wrapper/backend/process-lifecycle.md", "reason": "Defines subprocess, cancellation, temporary-storage, process-group, JobObject, and shutdown contracts."}
+{"file": ".trellis/spec/wrapper/backend/dependency-sources.md", "reason": "Defines dependency-source and lockfile rules relevant to removing the Rust yt-dlp crate and lofty patch."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Guides the Rust/Python framed protocol and runtime-generation boundary design."}
+{"file": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/research/python-yt-dlp-parse-options-contract.md", "reason": "Records the verified upstream Python parse_options return contract and its runtime-validation boundary."}

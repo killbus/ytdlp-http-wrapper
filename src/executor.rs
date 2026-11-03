@@ -1,12 +1,23 @@
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use std::env;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
-use tracing::warn;
+use tokio::time::Instant;
+use tracing::{info, warn};
 
 use crate::models::{ErrorResponse, RunRequest};
 use crate::routes::AppState;
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_request_id() -> String {
+    format!(
+        "request-{}",
+        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 fn default_denied_args() -> Vec<String> {
     vec![
@@ -50,59 +61,53 @@ fn reject_denied_args(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn redact_args(args: &[String]) -> Vec<String> {
-    let sensitive = [
-        "--cookies-from-browser",
-        "--cookies",
-        "--load-cookies",
-        "--add-header",
-        "--header",
-        "--username",
-        "--password",
-        "--video-password",
-        "--token",
-        "--api-key",
-    ];
-    args.iter()
-        .map(|arg| {
-            if sensitive.iter().any(|s| arg.starts_with(s)) {
-                if let Some(eq_pos) = arg.find('=') {
-                    format!("{} [REDACTED]", &arg[..=eq_pos])
-                } else {
-                    format!("{} [REDACTED]", arg)
-                }
-            } else {
-                arg.clone()
-            }
-        })
-        .collect()
-}
-
 pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResponse {
+    let request_id = next_request_id();
+    let request_started = Instant::now();
+
     if let Err(message) = reject_denied_args(&payload.args) {
-        warn!(log_type = "audit", args = ?redact_args(&payload.args), "{}", message);
+        warn!(
+            request_id,
+            backend = "cli",
+            log_type = "audit",
+            result = "argument_rejected",
+            "{}",
+            message
+        );
         return failure(StatusCode::UNPROCESSABLE_ENTITY, "ARG_REJECTED", message);
     }
     let duration = Duration::from_secs(payload.timeout_seconds.unwrap_or(30).clamp(1, 300));
+    let queue_started = Instant::now();
     let permit = match state.semaphore.clone().acquire_owned().await {
         Ok(permit) => permit,
         Err(_) => {
+            info!(
+                request_id,
+                backend = "cli",
+                queue_ms = queue_started.elapsed().as_millis() as u64,
+                response_ready_ms = request_started.elapsed().as_millis() as u64,
+                result = "shutting_down",
+                "Request rejected before dispatch"
+            );
             return failure(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SHUTTING_DOWN",
                 "Service is shutting down".into(),
-            )
+            );
         }
     };
+    let queue_ms = queue_started.elapsed().as_millis() as u64;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     state.tasks.spawn(crate::supervisor::supervise(
+        request_id.clone(),
         payload.args,
         duration,
+        queue_ms,
         state.clone(),
         permit,
         sender,
     ));
-    match receiver.await {
+    let response = match receiver.await {
         Ok(Ok(response)) => (StatusCode::OK, Json(serde_json::json!(response))),
         Ok(Err(e)) => failure(
             if e.code == "SHUTTING_DOWN" {
@@ -118,7 +123,16 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
             "SUPERVISOR_FAILURE",
             e.to_string(),
         ),
-    }
+    };
+    info!(
+        request_id,
+        backend = "cli",
+        queue_ms,
+        response_ready_ms = request_started.elapsed().as_millis() as u64,
+        status = response.0.as_u16(),
+        "Request response ready"
+    );
+    response
 }
 
 fn failure(
