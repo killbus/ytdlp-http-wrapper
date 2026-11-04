@@ -5,7 +5,11 @@ use process_wrap::tokio::ProcessGroup;
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use serde::Deserialize;
 use serde_json::json;
-use std::{fmt, path::PathBuf, process::Stdio};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{ChildStderr, ChildStdin, ChildStdout},
@@ -33,28 +37,35 @@ pub struct ResidentWorkerConfig {
     pub generation_id: String,
     pub worker_id: String,
     pub expected_yt_dlp_version: String,
+    /// Parent directory for per-request temporary files, mirroring the CLI
+    /// backend's `--temp-dir`. `None` uses the system temporary directory.
+    pub temp_dir: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 pub struct ResidentWorkerError {
-    code: &'static str,
+    code: String,
     message: String,
 }
 
 impl ResidentWorkerError {
-    fn new(code: &'static str, message: impl fmt::Display) -> Self {
+    fn new(code: impl Into<String>, message: impl fmt::Display) -> Self {
         Self {
-            code,
+            code: code.into(),
             message: message.to_string(),
         }
     }
 
-    pub(crate) fn manager_error(code: &'static str, message: impl fmt::Display) -> Self {
+    pub(crate) fn manager_error(code: impl Into<String>, message: impl fmt::Display) -> Self {
         Self::new(code, message)
     }
 
-    pub fn code(&self) -> &'static str {
-        self.code
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -77,6 +88,7 @@ pub struct ResidentWorker {
     generation_id: String,
     worker_id: String,
     healthy: bool,
+    temp_dir: Option<PathBuf>,
 }
 
 impl fmt::Debug for ResidentWorker {
@@ -169,6 +181,7 @@ impl ResidentWorker {
             generation_id: config.generation_id,
             worker_id: config.worker_id,
             healthy: true,
+            temp_dir: config.temp_dir,
         };
 
         let handshake = worker.handshake(&config.expected_yt_dlp_version).await;
@@ -217,20 +230,50 @@ impl ResidentWorker {
             ));
         }
 
+        // Per-request temp-directory ownership mirrors the CLI supervisor: the
+        // controller creates the owned directory before dispatch and removes it
+        // explicitly on every settle path (success, timeout, or protocol
+        // failure). The worker only borrows the directory for the request.
+        let temp = RequestTemp::new(&self.temp_dir)?;
+        let request_temp = temp.path().to_path_buf();
+        let result = self
+            .run_request(request_id, args, duration, &request_temp)
+            .await;
+        let cleanup = temp.settle();
+        match (result, cleanup) {
+            (Ok(response), None) => Ok(response),
+            (Ok(_), Some(cleanup)) => Err(cleanup),
+            (Err(error), None) => Err(error),
+            (Err(error), Some(cleanup)) => Err(ResidentWorkerError::new(
+                "TEMP_CLEANUP_FAILURE",
+                format!("original failure: {error}; {cleanup}"),
+            )),
+        }
+    }
+
+    async fn run_request(
+        &mut self,
+        request_id: &str,
+        args: Vec<String>,
+        duration: Option<Duration>,
+        request_temp: &Path,
+    ) -> Result<RunResponse, ResidentWorkerError> {
         let result = match duration {
-            Some(duration) => match timeout(duration, self.execute_inner(request_id, args)).await {
-                Ok(result) => result,
-                Err(_) => {
-                    self.healthy = false;
-                    self.cancel_active_request(request_id).await;
-                    let error = ResidentWorkerError::new(
-                        "WORKER_TIMEOUT",
-                        "resident worker request exceeded its deadline",
-                    );
-                    return Err(self.terminate_preserving(error).await);
+            Some(duration) => {
+                match timeout(duration, self.execute_inner(request_id, args, request_temp)).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.healthy = false;
+                        self.cancel_active_request(request_id).await;
+                        let error = ResidentWorkerError::new(
+                            "WORKER_TIMEOUT",
+                            "resident worker request exceeded its deadline",
+                        );
+                        return Err(self.terminate_preserving(error).await);
+                    }
                 }
-            },
-            None => self.execute_inner(request_id, args).await,
+            }
+            None => self.execute_inner(request_id, args, request_temp).await,
         };
         match result {
             Err(error)
@@ -268,9 +311,19 @@ impl ResidentWorker {
         &mut self,
         request_id: &str,
         args: Vec<String>,
+        request_temp: &Path,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        let frame = Frame::new(MessageType::Run, request_id, json!({ "args": args }))
-            .map_err(|error| ResidentWorkerError::new("WORKER_PROTOCOL_FAILURE", error))?;
+        // The run payload carries the controller-owned request directory; the
+        // worker only borrows it for the duration of the request.
+        let frame = Frame::new(
+            MessageType::Run,
+            request_id,
+            json!({
+                "args": args,
+                "request_temp": request_temp.to_string_lossy().into_owned(),
+            }),
+        )
+        .map_err(|error| ResidentWorkerError::new("WORKER_PROTOCOL_FAILURE", error))?;
         write_frame(&mut self.stdin, &frame)
             .await
             .map_err(|error| ResidentWorkerError::new("WORKER_PROTOCOL_FAILURE", error))?;
@@ -309,10 +362,9 @@ impl ResidentWorker {
             MessageType::Error => {
                 let error: ErrorPayload = serde_json::from_value(response.payload)
                     .map_err(|error| ResidentWorkerError::new("WORKER_PROTOCOL_FAILURE", error))?;
-                Err(ResidentWorkerError::new(
-                    "WORKER_EXECUTION_FAILURE",
-                    format!("{}: {}", error.code, error.message),
-                ))
+                // Surface the worker's structured business code verbatim; a
+                // business error must not retire the worker.
+                Err(ResidentWorkerError::new(error.code, error.message))
             }
             message_type => Err(ResidentWorkerError::new(
                 "WORKER_PROTOCOL_FAILURE",
@@ -569,6 +621,49 @@ impl ResidentWorker {
     }
 }
 
+/// Per-request owned temporary directory. Mirrors the CLI supervisor: the
+/// controller creates the directory before dispatch and settle removes it on
+/// every settle path. The worker only borrows the directory for the request.
+struct RequestTemp {
+    dir: Option<tempfile::TempDir>,
+}
+
+impl RequestTemp {
+    fn new(parent: &Option<PathBuf>) -> Result<Self, ResidentWorkerError> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("ytdlp-worker-request-");
+        let dir = match parent {
+            Some(parent) => builder.tempdir_in(parent),
+            None => builder.tempdir(),
+        }
+        .map_err(|error| ResidentWorkerError::new("TEMP_FAILURE", error))?;
+        Ok(Self { dir: Some(dir) })
+    }
+
+    fn path(&self) -> &Path {
+        match &self.dir {
+            Some(dir) => dir.path(),
+            None => Path::new(""),
+        }
+    }
+
+    /// Remove the owned directory. A failed removal preserves the directory and
+    /// surfaces the error (with its path), exactly like the CLI supervisor's
+    /// close_temp.
+    fn settle(self) -> Option<ResidentWorkerError> {
+        let dir = self.dir?;
+        let path = dir.path().to_path_buf();
+        dir.close()
+            .map_err(|error| {
+                ResidentWorkerError::new(
+                    "TEMP_CLEANUP_FAILURE",
+                    format!("{}: {error}", path.display()),
+                )
+            })
+            .err()
+    }
+}
+
 fn cancellation_frame(request_id: &str) -> Result<Frame, crate::worker_protocol::ProtocolError> {
     Frame::new(MessageType::Cancel, request_id, json!({}))
 }
@@ -586,7 +681,19 @@ async fn wait_for_group(pgid: i32) -> std::io::Result<()> {
     }
 }
 
+fn join_python_path(
+    entries: &[PathBuf],
+) -> Result<Option<std::ffi::OsString>, ResidentWorkerError> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    std::env::join_paths(entries)
+        .map(Some)
+        .map_err(|error| ResidentWorkerError::new("WORKER_CONFIG_FAILURE", error))
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::cancellation_frame;
     use crate::worker_protocol::MessageType;
@@ -600,15 +707,4 @@ mod tests {
         assert_eq!(frame.request_id, "request-42");
         assert_eq!(frame.payload, json!({}));
     }
-}
-
-fn join_python_path(
-    entries: &[PathBuf],
-) -> Result<Option<std::ffi::OsString>, ResidentWorkerError> {
-    if entries.is_empty() {
-        return Ok(None);
-    }
-    std::env::join_paths(entries)
-        .map(Some)
-        .map_err(|error| ResidentWorkerError::new("WORKER_CONFIG_FAILURE", error))
 }

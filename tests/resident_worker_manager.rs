@@ -38,6 +38,7 @@ fn config(python: PathBuf, worker_id: &str) -> ResidentWorkerConfig {
         generation_id: "generation-fixture".into(),
         worker_id: worker_id.into(),
         expected_yt_dlp_version: "fixture-version".into(),
+        temp_dir: None,
     }
 }
 
@@ -56,7 +57,7 @@ async fn manager_reuses_worker_after_structured_business_error() {
         .await
         .err()
         .expect("the fixture should return a structured business error");
-    assert_eq!(first.code(), "WORKER_EXECUTION_FAILURE");
+    assert_eq!(first.code(), "FIXTURE_FAILURE");
     assert_eq!(manager.status().await, ResidentWorkerManagerStatus::Ready);
 
     let second = manager
@@ -64,7 +65,7 @@ async fn manager_reuses_worker_after_structured_business_error() {
         .await
         .err()
         .expect("the reused worker should return a structured business error");
-    assert_eq!(second.code(), "WORKER_EXECUTION_FAILURE");
+    assert_eq!(second.code(), "FIXTURE_FAILURE");
     assert_eq!(manager.status().await, ResidentWorkerManagerStatus::Ready);
     manager.shutdown().await.unwrap();
 }

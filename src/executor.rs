@@ -68,7 +68,7 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
     if let Err(message) = reject_denied_args(&payload.args) {
         warn!(
             request_id,
-            backend = "cli",
+            backend = %state.backend.name(),
             log_type = "audit",
             result = "argument_rejected",
             "{}",
@@ -83,7 +83,7 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
         Err(_) => {
             info!(
                 request_id,
-                backend = "cli",
+                backend = %state.backend.name(),
                 queue_ms = queue_started.elapsed().as_millis() as u64,
                 response_ready_ms = request_started.elapsed().as_millis() as u64,
                 result = "shutting_down",
@@ -98,15 +98,31 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
     };
     let queue_ms = queue_started.elapsed().as_millis() as u64;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    state.tasks.spawn(crate::supervisor::supervise(
-        request_id.clone(),
-        payload.args,
-        duration,
-        queue_ms,
-        state.clone(),
-        permit,
-        sender,
-    ));
+    match state.backend.clone() {
+        // The CLI backend stays the default; selection happens before dispatch.
+        crate::backend::Backend::Cli => {
+            state.tasks.spawn(crate::supervisor::supervise(
+                request_id.clone(),
+                payload.args,
+                duration,
+                queue_ms,
+                state.clone(),
+                permit,
+                sender,
+            ));
+        }
+        crate::backend::Backend::Resident(_) => {
+            state.tasks.spawn(crate::backend::reside(
+                request_id.clone(),
+                payload.args,
+                duration,
+                queue_ms,
+                state.clone(),
+                permit,
+                sender,
+            ));
+        }
+    }
     let response = match receiver.await {
         Ok(Ok(response)) => (StatusCode::OK, Json(serde_json::json!(response))),
         Ok(Err(e)) => failure(
@@ -126,7 +142,7 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
     };
     info!(
         request_id,
-        backend = "cli",
+        backend = %state.backend.name(),
         queue_ms,
         response_ready_ms = request_started.elapsed().as_millis() as u64,
         status = response.0.as_u16(),
@@ -137,11 +153,14 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
 
 fn failure(
     status: StatusCode,
-    code: &'static str,
+    code: impl Into<String>,
     error: String,
 ) -> (StatusCode, Json<serde_json::Value>) {
     (
         status,
-        Json(serde_json::json!(ErrorResponse { error, code })),
+        Json(serde_json::json!(ErrorResponse {
+            error,
+            code: code.into()
+        })),
     )
 }

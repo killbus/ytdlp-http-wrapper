@@ -52,14 +52,14 @@ Rollback point: protocol code remains unreachable from production routing.
 
 ## Phase 3: Add resident worker supervision
 
-- [ ] Add the backend abstraction while preserving `RunResponse`.
-- [ ] Implement a single-worker resident backend behind an explicit non-default
+- [x] Add the backend abstraction while preserving `RunResponse`.
+- [x] Implement a single-worker resident backend behind an explicit non-default
       configuration.
-- [ ] Extend process-group/JobObject supervision to resident workers.
-- [ ] Implement exclusive leases, timeout/cancel retirement, crash handling,
+- [x] Extend process-group/JobObject supervision to resident workers.
+- [x] Implement exclusive leases, timeout/cancel retirement, crash handling,
       replacement, and shutdown.
 - [ ] Extend to a bounded worker pool with backpressure and observable health.
-- [ ] Preserve request-specific temporary-directory ownership and output caps.
+- [x] Preserve request-specific temporary-directory ownership and output caps.
 
 Validation:
 

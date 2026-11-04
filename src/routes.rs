@@ -16,6 +16,7 @@ pub struct AppState {
     pub binary_path: PathBuf,
     pub semaphore: Arc<Semaphore>,
     pub temp_dir: Option<PathBuf>,
+    pub backend: crate::backend::Backend,
     pub(crate) shutdown: CancellationToken,
     pub(crate) tasks: TaskTracker,
 }
@@ -26,9 +27,17 @@ impl AppState {
             binary_path,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             temp_dir,
+            backend: crate::backend::Backend::default_backend(),
             shutdown: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }
+    }
+
+    /// Selects the execution backend. The CLI backend is the default; the
+    /// resident backend is only reachable through explicit configuration.
+    pub fn with_backend(mut self, backend: crate::backend::Backend) -> Self {
+        self.backend = backend;
+        self
     }
 
     pub fn begin_shutdown(&self) {

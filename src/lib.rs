@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod executor;
 pub mod models;
 pub mod resident_worker;

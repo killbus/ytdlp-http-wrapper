@@ -59,6 +59,42 @@ struct Cli {
         help = "JSON array of blocked arguments; empty array allows all"
     )]
     denied_args: Option<String>,
+
+    #[arg(
+        long = "backend",
+        env = "BACKEND",
+        default_value = "cli",
+        help = "Execution backend: cli (default) or resident"
+    )]
+    backend: String,
+
+    #[arg(
+        long = "worker-python",
+        env = "WORKER_PYTHON",
+        help = "Python interpreter that runs the resident worker"
+    )]
+    worker_python: Option<PathBuf>,
+
+    #[arg(
+        long = "worker-path",
+        env = "WORKER_PATH",
+        help = "Path to worker/ytdlp_worker.py for the resident backend"
+    )]
+    worker_path: Option<PathBuf>,
+
+    #[arg(
+        long = "worker-python-path",
+        env = "WORKER_PYTHONPATH",
+        help = "PATH-SEPARATOR-separated PYTHONPATH entries for the resident worker"
+    )]
+    worker_python_path: Option<String>,
+
+    #[arg(
+        long = "worker-yt-dlp-version",
+        env = "WORKER_YTDLP_VERSION",
+        help = "Pinned yt-dlp version the resident worker handshake must report"
+    )]
+    worker_yt_dlp_version: Option<String>,
 }
 
 async fn install_with_retry(
@@ -85,6 +121,45 @@ async fn install_with_retry(
     Err(last_err
         .map(Into::into)
         .unwrap_or_else(|| "yt-dlp installer failed with no captured error".into()))
+}
+
+fn build_backend(
+    cli: &Cli,
+    temp_dir: Option<PathBuf>,
+) -> Result<ytdlp_http_wrapper::backend::Backend, Box<dyn std::error::Error>> {
+    match cli.backend.as_str() {
+        // The CLI backend stays the default.
+        "cli" => Ok(ytdlp_http_wrapper::backend::Backend::default_backend()),
+        "resident" => {
+            let python = cli.worker_python.clone().ok_or(
+                "backend=resident requires --worker-python (the Python interpreter that runs the worker)",
+            )?;
+            let worker_path = cli.worker_path.clone().unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("worker")
+                    .join("ytdlp_worker.py")
+            });
+            let python_path_entries = cli
+                .worker_python_path
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(|value| std::env::split_paths(value).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let expected_version = cli.worker_yt_dlp_version.clone().ok_or(
+                "backend=resident requires --worker-yt-dlp-version (the pinned yt-dlp version the worker handshake must report)",
+            )?;
+            ytdlp_http_wrapper::backend::Backend::from_config(
+                "resident",
+                python,
+                worker_path,
+                python_path_entries,
+                &expected_version,
+                temp_dir,
+            )
+            .map_err(Into::into)
+        }
+        other => Err(format!("unknown backend '{other}' (expected cli or resident)").into()),
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -126,21 +201,29 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     if max_concurrent == 0 {
         return Err("max-concurrent must be greater than zero".into());
     }
-    let temp_dir = cli.temp_dir.map(std::fs::canonicalize).transpose()?;
+    let temp_dir = cli
+        .temp_dir
+        .clone()
+        .map(std::fs::canonicalize)
+        .transpose()?;
     if temp_dir.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err("temp-dir must be an existing directory".into());
     }
+
+    let backend = build_backend(&cli, temp_dir.clone())?;
+    // A bad resident configuration fails at boot, before any request is admitted.
+    backend.start().await?;
+    info!(backend = %backend.name(), "execution backend ready");
 
     info!("Bootstrapping yt-dlp dependency");
     let installer = LibraryInstaller::new(cli.libs_dir);
     let ytdlp_binary_path = install_with_retry(&installer, 3).await?;
     info!(path = %ytdlp_binary_path.display(), "Dependency ready");
 
-    let app_state = Arc::new(routes::AppState::new(
-        ytdlp_binary_path,
-        max_concurrent,
-        temp_dir,
-    ));
+    let app_state = Arc::new(
+        routes::AppState::new(ytdlp_binary_path, max_concurrent, temp_dir)
+            .with_backend(backend.clone()),
+    );
 
     let app = routes::app(app_state.clone());
 
@@ -167,6 +250,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     }).await;
     app_state.begin_shutdown();
     app_state.wait_for_cleanup().await;
+    app_state.backend.shutdown().await;
     server?;
 
     Ok(())

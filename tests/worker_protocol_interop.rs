@@ -58,6 +58,7 @@ async fn rust_and_python_exchange_worker_frames() {
         eprintln!("skipping worker interop test because Python is unavailable");
         return;
     };
+    let request_temp = tempfile::tempdir().expect("tempdir for interop request");
     let mut child = spawn_worker(&python);
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = child.stdout.take().unwrap();
@@ -82,7 +83,10 @@ async fn rust_and_python_exchange_worker_frames() {
         &Frame::new(
             MessageType::Run,
             "request-1",
-            json!({"args": ["first", "cookie=fixture-secret"]}),
+            json!({
+                "args": ["first", "cookie=fixture-secret"],
+                "request_temp": request_temp.path().to_string_lossy()
+            }),
         )
         .unwrap(),
     )
@@ -100,7 +104,15 @@ async fn rust_and_python_exchange_worker_frames() {
 
     write_frame(
         &mut stdin,
-        &Frame::new(MessageType::Run, "request-2", json!({"args": ["second"]})).unwrap(),
+        &Frame::new(
+            MessageType::Run,
+            "request-2",
+            json!({
+                "args": ["second"],
+                "request_temp": request_temp.path().to_string_lossy()
+            }),
+        )
+        .unwrap(),
     )
     .await
     .unwrap();

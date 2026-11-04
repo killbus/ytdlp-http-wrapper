@@ -27,6 +27,39 @@ pub struct ResidentWorkerManager {
 }
 
 impl ResidentWorkerManager {
+    /// Builds a manager without starting its worker. Used by the resident
+    /// backend so the spawn + handshake happen at boot (`ensure_started`),
+    /// letting a bad resident configuration fail before any request is admitted.
+    pub fn for_config(config: ResidentWorkerConfig) -> Self {
+        Self {
+            config,
+            worker: Arc::new(Mutex::new(None)),
+            execution_gate: Mutex::new(()),
+            busy: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
+        }
+    }
+
+    /// Starts the worker if it has not started yet. Idempotent for the happy
+    /// path; a start failure leaves the manager empty so the next request
+    /// retries the start (single-worker replacement behavior).
+    pub async fn ensure_started(&self) -> Result<(), ResidentWorkerError> {
+        if self.worker.lock().await.is_some() {
+            return Ok(());
+        }
+        let worker = ResidentWorker::start(self.config.clone()).await?;
+        *self.worker.lock().await = Some(worker);
+        Ok(())
+    }
+
+    pub fn generation_id(&self) -> &str {
+        &self.config.generation_id
+    }
+
+    pub fn worker_id(&self) -> &str {
+        &self.config.worker_id
+    }
+
     pub async fn start(config: ResidentWorkerConfig) -> Result<Self, ResidentWorkerError> {
         let worker = ResidentWorker::start(config.clone()).await?;
         Ok(Self {

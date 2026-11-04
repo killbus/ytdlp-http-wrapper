@@ -246,17 +246,65 @@ class Worker:
     def _handle_run(
         self, runtime: Any, request_id: str, payload: Any
     ) -> None:
-        if not isinstance(payload, dict) or set(payload) != {"args"}:
+        if not isinstance(payload, dict):
+            raise ProtocolError("run payload must be a JSON object")
+        if "args" not in payload or set(payload) not in (
+            {"args"},
+            {"args", "request_temp"},
+        ):
             raise ProtocolError("run payload fields do not match protocol")
         args = payload["args"]
         if not isinstance(args, list) or not all(
             isinstance(argument, str) for argument in args
         ):
             raise ProtocolError("run args must be a string array")
+        request_temp = payload.get("request_temp")
+        if request_temp is not None and (
+            not isinstance(request_temp, str) or not request_temp
+        ):
+            raise ProtocolError("request_temp must be a non-empty path")
+
+        # Per-request temp-directory ownership: the controller (Rust) creates the
+        # owned temp directory and removes it after this request, mirroring the
+        # CLI supervisor. The worker must not download into the controller's own
+        # cwd, so it borrows the owned directory by switching into it and pointing
+        # the process temp variables at it, then restores its working directory
+        # and environment. Removal is owned by the controller, not the worker.
+        previous_cwd = None
+        previous_env = {}
+        if request_temp is not None:
+            previous_cwd = os.getcwd()
+            previous_env = {key: os.environ.get(key) for key in ("TMPDIR", "TMP", "TEMP")}
+            try:
+                os.chdir(request_temp)
+            except OSError:
+                write_frame(
+                    self._output,
+                    "error",
+                    request_id,
+                    {
+                        "code": "WORKER_REQUEST_TEMP_FAILURE",
+                        "message": "request temporary directory is unavailable",
+                    },
+                )
+                return
+            for key in ("TMPDIR", "TMP", "TEMP"):
+                os.environ[key] = request_temp
+
+        def _restore() -> None:
+            if previous_cwd is None:
+                return
+            for key, value in previous_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            os.chdir(previous_cwd)
 
         try:
             result = runtime.execute(tuple(args))
         except Exception:
+            _restore()
             write_frame(
                 self._output,
                 "error",
@@ -267,6 +315,8 @@ class Worker:
                 },
             )
             return
+        finally:
+            _restore()
 
         write_frame(
             self._output,

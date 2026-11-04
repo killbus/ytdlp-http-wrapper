@@ -1,7 +1,10 @@
 import io
 import json
+import os
 import struct
 import sys
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -67,12 +70,18 @@ class WorkerTests(unittest.TestCase):
         return status, decode_all(output), diagnostics.getvalue(), selected_runtime
 
     def test_handshake_two_requests_ping_and_shutdown(self):
+        request_temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, request_temp, True)
         incoming = b"".join(
             [
                 encoded_frame("ready", "startup", {}),
-                encoded_frame("run", "request-1", {"args": ["--version"]}),
+                encoded_frame(
+                    "run", "request-1", {"args": ["--version"], "request_temp": request_temp}
+                ),
                 encoded_frame("ping", "ping-1", {}),
-                encoded_frame("run", "request-2", {"args": ["example:test"]}),
+                encoded_frame(
+                    "run", "request-2", {"args": ["example:test"], "request_temp": request_temp}
+                ),
                 encoded_frame("shutdown", "shutdown-1", {}),
             ]
         )
@@ -184,11 +193,15 @@ class WorkerTests(unittest.TestCase):
             def execute(self, args):
                 raise RuntimeError("cookie=secret-token")
 
+        request_temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, request_temp, True)
         incoming = b"".join(
             [
                 encoded_frame("ready", "startup", {}),
                 encoded_frame(
-                    "run", "request-1", {"args": ["cookie=secret-token"]}
+                    "run",
+                    "request-1",
+                    {"args": ["cookie=secret-token"], "request_temp": request_temp},
                 ),
                 encoded_frame("shutdown", "shutdown-1", {}),
             ]
@@ -207,6 +220,105 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(frames[2]["request_id"], "shutdown-1")
         self.assertNotIn("secret-token", json.dumps(frames))
         self.assertNotIn("secret-token", diagnostics)
+        self.assertEqual(os.listdir(request_temp), [])
+
+    def test_request_temp_directory_is_borrowed_and_restored(self):
+        class TrackingRuntime(FakeRuntime):
+            def execute(self, args):
+                # While executing, the worker must have switched into the owned
+                # request directory and pointed the temp variables at it.
+                temp_dir = os.environ["TEMP"]
+                self.observed_cwd = os.getcwd()
+                marker = os.path.join(temp_dir, "owned-file.txt")
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("owned\n")
+                self.observed_temp = temp_dir
+                return ytdlp_worker.ExecutionResult(
+                    exit_code=0, stdout="tracked", stderr=""
+                )
+
+        request_temp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, request_temp, True)
+        runtime = TrackingRuntime()
+        original_cwd = os.getcwd()
+        original_temp = os.environ.get("TEMP")
+        self.addCleanup(os.chdir, original_cwd)
+        self.addCleanup(
+            lambda: os.environ.pop("TEMP", None)
+            if original_temp is None
+            else os.environ.__setitem__("TEMP", original_temp)
+        )
+        incoming = b"".join(
+            [
+                encoded_frame("ready", "startup", {}),
+                encoded_frame(
+                    "run",
+                    "request-1",
+                    {"args": ["--version"], "request_temp": request_temp},
+                ),
+                encoded_frame("shutdown", "shutdown-1", {}),
+            ]
+        )
+
+        status, frames, diagnostics, _ = self.run_worker(incoming, runtime)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(diagnostics, "")
+        self.assertEqual(frames[1]["message_type"], "result")
+        self.assertEqual(frames[1]["payload"]["stdout"], "tracked")
+        # While executing the request the worker was inside the owned directory
+        # with the temp variables pointing at it.
+        self.assertEqual(os.path.abspath(runtime.observed_cwd), os.path.abspath(request_temp))
+        self.assertEqual(os.path.abspath(runtime.observed_temp), os.path.abspath(request_temp))
+        # The worker wrote into the owned directory; the controller removes it,
+        # so the file is still present after the worker restores state.
+        self.assertTrue(os.path.isfile(os.path.join(request_temp, "owned-file.txt")))
+        # The worker restored its working directory and environment afterward.
+        self.assertEqual(os.getcwd(), original_cwd)
+        self.assertEqual(os.environ.get("TEMP"), original_temp)
+
+    def test_empty_request_temp_fails_closed(self):
+        incoming = b"".join(
+            [
+                encoded_frame("ready", "startup", {}),
+                encoded_frame(
+                    "run", "request-1", {"args": ["--version"], "request_temp": ""}
+                ),
+            ]
+        )
+
+        status, frames, diagnostics, runtime = self.run_worker(incoming)
+
+        self.assertEqual(status, 2)
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0]["message_type"], "hello")
+        self.assertEqual(runtime.calls, [])
+        self.assertEqual(diagnostics, "worker protocol failure\n")
+
+    def test_unusable_request_temp_returns_structured_error(self):
+        request_temp = str(Path(tempfile.gettempdir()) / "ytdlp-missing-parent")
+        self.assertFalse(os.path.isdir(request_temp))
+        incoming = b"".join(
+            [
+                encoded_frame("ready", "startup", {}),
+                encoded_frame(
+                    "run",
+                    "request-1",
+                    {"args": ["--version"], "request_temp": request_temp},
+                ),
+                encoded_frame("shutdown", "shutdown-1", {}),
+            ]
+        )
+
+        status, frames, diagnostics, runtime = self.run_worker(incoming)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(runtime.calls, [])
+        self.assertEqual(frames[1]["message_type"], "error")
+        self.assertEqual(
+            frames[1]["payload"]["code"], "WORKER_REQUEST_TEMP_FAILURE"
+        )
+        self.assertEqual(frames[2]["message_type"], "result")
 
 
 class FramingTests(unittest.TestCase):

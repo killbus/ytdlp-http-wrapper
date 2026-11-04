@@ -21,21 +21,21 @@ const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 const TERMINATION_GRACE: Duration = Duration::from_secs(3);
 const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(crate) struct Failure {
-    pub code: &'static str,
+pub struct Failure {
+    pub code: String,
     pub message: String,
 }
 
 impl Failure {
-    fn new(code: &'static str, error: impl std::fmt::Display) -> Self {
+    pub(crate) fn new(code: impl Into<String>, error: impl std::fmt::Display) -> Self {
         Self {
-            code,
+            code: code.into(),
             message: error.to_string(),
         }
     }
 }
 
-pub(crate) type Reply = Result<RunResponse, Failure>;
+pub type Reply = Result<RunResponse, Failure>;
 
 // Drop is a last resort, not successful cleanup. Preserve files and close admission
 // if a panic/runtime abort interrupts the supervised path.
@@ -150,7 +150,7 @@ pub(crate) async fn supervise(
     let result_kind = match &result {
         Ok(response) if response.exit_code == -1 => "interrupted",
         Ok(_) => "completed",
-        Err(failure) => failure.code,
+        Err(failure) => failure.code.as_str(),
     };
     info!(
         request_id = %request_id,

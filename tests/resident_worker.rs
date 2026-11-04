@@ -51,6 +51,7 @@ fn config(python: PathBuf) -> ResidentWorkerConfig {
         generation_id: "generation-fixture".into(),
         worker_id: "worker-fixture".into(),
         expected_yt_dlp_version: "fixture-version".into(),
+        temp_dir: None,
     }
 }
 
