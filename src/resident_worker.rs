@@ -15,6 +15,7 @@ use tokio::{
     process::{ChildStderr, ChildStdin, ChildStdout},
     time::{timeout, Duration},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     models::RunResponse,
@@ -128,6 +129,17 @@ struct ErrorPayload {
     message: String,
 }
 
+/// How the in-flight request settled. Kept separate from
+/// `Result<RunResponse, ResidentWorkerError>` so `run_request` can decide the
+/// retirement path after the cancellation race, without running the
+/// termination sequence inside a `select!` branch.
+enum Dispatched {
+    Response(RunResponse),
+    Failure(ResidentWorkerError),
+    Deadline,
+    Cancelled,
+}
+
 impl ResidentWorker {
     pub async fn start(config: ResidentWorkerConfig) -> Result<Self, ResidentWorkerError> {
         let python_path = join_python_path(&config.python_path_entries)?;
@@ -204,7 +216,8 @@ impl ResidentWorker {
         request_id: &str,
         args: Vec<String>,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_with_deadline(request_id, args, None).await
+        self.execute_with_deadline(request_id, args, None, CancellationToken::new())
+            .await
     }
 
     pub async fn execute_with_timeout(
@@ -213,7 +226,22 @@ impl ResidentWorker {
         args: Vec<String>,
         duration: Duration,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_with_deadline(request_id, args, Some(duration))
+        self.execute_with_deadline(request_id, args, Some(duration), CancellationToken::new())
+            .await
+    }
+
+    /// Bounded-deadline dispatch that also observes a caller-owned cancellation
+    /// trigger. Design section 5: a cancellation sends the cooperative cancel
+    /// frame for the active request, waits out the bounded grace period, and
+    /// then terminates and replaces the whole worker.
+    pub async fn execute_with_cancellation(
+        &mut self,
+        request_id: &str,
+        args: Vec<String>,
+        duration: Duration,
+        cancel: CancellationToken,
+    ) -> Result<RunResponse, ResidentWorkerError> {
+        self.execute_with_deadline(request_id, args, Some(duration), cancel)
             .await
     }
 
@@ -222,6 +250,7 @@ impl ResidentWorker {
         request_id: &str,
         args: Vec<String>,
         duration: Option<Duration>,
+        cancel: CancellationToken,
     ) -> Result<RunResponse, ResidentWorkerError> {
         if !self.healthy {
             return Err(ResidentWorkerError::new(
@@ -237,7 +266,7 @@ impl ResidentWorker {
         let temp = RequestTemp::new(&self.temp_dir)?;
         let request_temp = temp.path().to_path_buf();
         let result = self
-            .run_request(request_id, args, duration, &request_temp)
+            .run_request(request_id, args, duration, &request_temp, cancel)
             .await;
         let cleanup = temp.settle();
         match (result, cleanup) {
@@ -257,36 +286,94 @@ impl ResidentWorker {
         args: Vec<String>,
         duration: Option<Duration>,
         request_temp: &Path,
+        cancel: CancellationToken,
     ) -> Result<RunResponse, ResidentWorkerError> {
+        // Race the request against the caller's cancellation trigger. Retirement
+        // runs after the race so the cooperative cancel frame and its bounded
+        // grace period are never dropped mid-sequence.
+        let dispatched = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Dispatched::Cancelled,
+            dispatched = self.dispatch(request_id, args, duration, request_temp) => dispatched,
+        };
+        match dispatched {
+            Dispatched::Response(response) => Ok(response),
+            // A structured business error must not retire the worker.
+            Dispatched::Failure(error)
+                if !matches!(
+                    error.code(),
+                    "WORKER_PROTOCOL_FAILURE" | "WORKER_OUTPUT_LIMIT"
+                ) =>
+            {
+                Err(error)
+            }
+            Dispatched::Failure(error) => {
+                self.healthy = false;
+                Err(self.terminate_preserving(error).await)
+            }
+            Dispatched::Deadline => {
+                self.healthy = false;
+                self.cancel_active_request(request_id).await;
+                let error = ResidentWorkerError::new(
+                    "WORKER_TIMEOUT",
+                    "resident worker request exceeded its deadline",
+                );
+                Err(self.terminate_preserving(error).await)
+            }
+            Dispatched::Cancelled => self.retire_cancelled(request_id).await,
+        }
+    }
+
+    /// Sends the request frame and waits for the worker to settle it, bounded by
+    /// the request deadline. Retirement decisions are made by `run_request`.
+    async fn dispatch(
+        &mut self,
+        request_id: &str,
+        args: Vec<String>,
+        duration: Option<Duration>,
+        request_temp: &Path,
+    ) -> Dispatched {
         let result = match duration {
             Some(duration) => {
                 match timeout(duration, self.execute_inner(request_id, args, request_temp)).await {
                     Ok(result) => result,
-                    Err(_) => {
-                        self.healthy = false;
-                        self.cancel_active_request(request_id).await;
-                        let error = ResidentWorkerError::new(
-                            "WORKER_TIMEOUT",
-                            "resident worker request exceeded its deadline",
-                        );
-                        return Err(self.terminate_preserving(error).await);
-                    }
+                    Err(_) => return Dispatched::Deadline,
                 }
             }
             None => self.execute_inner(request_id, args, request_temp).await,
         };
         match result {
-            Err(error)
-                if matches!(
-                    error.code(),
-                    "WORKER_PROTOCOL_FAILURE" | "WORKER_OUTPUT_LIMIT"
-                ) =>
-            {
-                self.healthy = false;
-                Err(self.terminate_preserving(error).await)
-            }
-            result => result,
+            Ok(response) => Dispatched::Response(response),
+            Err(error) => Dispatched::Failure(error),
         }
+    }
+
+    /// Retires the worker after the caller cancelled the active request and
+    /// reports the request as interrupted, mirroring the CLI supervisor's
+    /// cancellation shape (HTTP 200 with `exit_code: -1`).
+    ///
+    /// The worker is always retired: the Python adapter does not read frames
+    /// while it executes, so completion of the cancel frame cannot be proven
+    /// for the active request (see review/owner-decisions.md, finding 1).
+    async fn retire_cancelled(
+        &mut self,
+        request_id: &str,
+    ) -> Result<RunResponse, ResidentWorkerError> {
+        self.healthy = false;
+        self.cancel_active_request(request_id).await;
+        let cancelled = ResidentWorkerError::new(
+            "WORKER_CANCELLED",
+            "resident worker request was cancelled before completion",
+        );
+        let preserved = self.terminate_preserving(cancelled).await;
+        if preserved.code() == "WORKER_CANCELLED" {
+            return Ok(RunResponse {
+                exit_code: -1,
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        Err(preserved)
     }
 
     async fn cancel_active_request(&mut self, request_id: &str) {

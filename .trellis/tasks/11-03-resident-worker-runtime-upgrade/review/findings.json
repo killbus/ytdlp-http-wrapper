@@ -1,0 +1,68 @@
+{
+  "round": 1,
+  "base_commit": "0fe685f",
+  "review_commit": "c08f398",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "files": [
+        "worker/ytdlp_worker.py",
+        "src/resident_worker.rs",
+        "tests/resident_backend.rs"
+      ],
+      "summary": "Handler cancellation is not observed on the resident path, so a cancelled or disconnected client leaves a slow request running to its full timeout (retiring the single worker), and the pre-dispatch cancellation check is only ever exercised when a prior request already cancelled admission.",
+      "detail": "Design section 5 commits that \"a timeout or cancellation sends a cooperative cancel frame only when the worker protocol can prove it applies to the active request\", and implement.md Phase 3 ticks \"exclusive leases, timeout/cancel retirement, crash handling, replacement, and shutdown\". The timeout half is implemented (worker/ytdlp_worker.py:271 sends a cancel frame, retires, and the test resident_backend_timeout_is_an_infrastructure_failure_without_retry proves it). The cancellation half has no wiring: the CLI supervisor reacts to client cancellation via the `reply.closed()` select branch and pre-spawn `state.shutdown.is_cancelled() || reply.is_closed()` check (src/supervisor.rs:186, src/supervisor.rs:264), but Backend::reside (src/backend.rs:133-142) only checks `state.shutdown.is_cancelled()` and src/resident_worker.rs never observes `reply.closed()` (its one consumer is supervisor.rs:264). Two concrete consequences: (1) on a cancelled client the task keeps executing; if the client waits for a fresh 503 and retries, the second dispatch is blocked on execution_gate for up to timeout_seconds (default 30s, max 300s) and then times out, retiring the otherwise-healthy single worker and returning 500 WORKER_TIMEOUT. (2) `reside` sends SHUTTING_DOWN when `state.shutdown.is_cancelled()`, but begin_shutdown is only reached by the Drop guard on an unfinished Resources, which requires an interrupted CLI request first - so the branch is effectively unreachable unless the process is tearing down. The design also does not define this resident cancellation contract, so the implement.md checkbox and this finding both rest on an implicit, unverified assumption.",
+      "evidence": [
+        "src/supervisor.rs:264 (reply.closed() branch exists for CLI only)",
+        "src/supervisor.rs:186 (pre-spawn cancellation check, CLI only)",
+        "src/backend.rs:133 (reside pre-dispatch check is shutdown-only)",
+        "worker/ytdlp_worker.py:271 (cancel_active_request has no cancellation-frame consumer path in tests)",
+        "tests/resident_backend.rs (timeout test present, no cancellation test)"
+      ],
+      "recommendation": "Either (a) route cancellation through the manager: oneshot reply closed or state.shutdown observed -> cancel frame to the active request -> bounded grace -> retire worker and reply 503, with a deterministic test using a slow fixture request and a dropped client; or (b) if the Phase 3 ticket genuinely defers cancellation semantics, untick the matching implement.md checkbox, record the gap in the task, and note it in design section 5. As implemented, the current state is neither verified nor explicitly scoped out."
+    },
+    {
+      "id": 2,
+      "severity": "minor",
+      "files": [
+        "src/executor.rs",
+        "src/backend.rs"
+      ],
+      "summary": "Timeouts surface differently across backends for the same request: CLI returns HTTP 200 with exit_code -1 (per spec error matrix and design section 9), resident returns 500 WORKER_TIMEOUT; resident business errors also surface as 500 with the worker's verbatim code instead of the 200/exit_code-1 shape a client sees on the CLI.",
+      "detail": "The design (section 9 Compatibility) says timeout compatibility remains HTTP 200 with exit_code -1 \"unless a separately reviewed API change is approved\", and the wrapper backend spec error matrix rows \"Timeout, cleanup succeeds -> 200 exit_code=-1\". Backend::reside (src/backend.rs:176-199) returns any non-SHUTTING_DOWN Failure as 500, so the same request that yields {\"exit_code\":-1,...} on the CLI yields {\"error\":...,\"code\":\"WORKER_TIMEOUT\"} with 500 on the resident backend. The commit's own comment says business codes are surfaced \"verbatim\" (src/resident_worker.rs:366), which is consistent pass-through but makes the per-backend status/code behavior diverge. Before the resident backend becomes default, design section 9 requires contract tests that \"compare resident and CLI results for local deterministic fixtures\"; none exists in this commit (tests/resident_backend.rs asserts resident-side statuses only). This is flagged as an open contract question for the review gate rather than a defect: either the difference is an accepted, separately reviewed API change (then record the approval) or the resident path must normalize timeout to the 200/exit_code -1 contract and contract-equivalence tests are added.",
+      "evidence": [
+        ".trellis/spec/wrapper/backend/process-lifecycle.md (error matrix: Timeout -> 200 exit_code=-1)",
+        ".trellis/tasks/11-03-resident-worker-runtime-upgrade/design.md section 9 (compatibility + contract tests)",
+        "src/executor.rs:129 (code == SHUTTING_DOWN ? 503 : 500)",
+        "tests/resident_backend.rs:resident_backend_timeout_is_an_infrastructure_failure_without_retry (asserts 500)"
+      ],
+      "recommendation": "Decide the timeout/business-error contract for the resident backend explicitly: if 200/exit_code -1 is kept, map WORKER_TIMEOUT (and business errors per the PRD \"business-code pass-through\" intent) to the RunResponse shape; if divergence is intended, record the reviewed API change and add the resident-vs-CLI fixture comparison tests design section 9 requires."
+    }
+  ],
+  "finding_responses": [],
+  "pre_checks": {
+    "scope": "pass - only the task's own implement.md is touched under .trellis (Phase 3 checkbox ticks matching delivered state); no prd.md, design.md, approval.md, or .trellis/spec/ files are in the baseline diff",
+    "design_hash": "not_recomputed - approval.md records design_sha256 and the loop verify-check owns hash-match; design.md was used as the frozen yardstick without recomputation",
+    "ticket_scope": "pass - diff implements the Phase 3 remainder only (backend abstraction preserving RunResponse, explicit non-default single-worker resident backend, executor wiring, per-request temp-dir ownership, business-code pass-through); the unchecked bounded-pool checkbox, Phase 4, and Phase 6 remain absent from the code",
+    "verification_ran": [
+      "python -m unittest tests.test_ytdlp_worker -v (14 passed)",
+      "cargo test --test resident_backend --test resident_worker --test resident_worker_manager --test worker_protocol_interop (5+14+4+4 passed)",
+      "cargo test (full suite green; 6 ignored platform tests unchanged)",
+      "cargo fmt --check (clean)",
+      "cargo clippy --all-targets -- -D warnings (clean)"
+    ],
+    "verified_positive": [
+      "RunResponse shape preserved (src/models.rs unchanged except ErrorResponse.code widening); /run success contract intact (tests/run_contract.rs green)",
+      "Resident backend is explicit and non-default: --backend/BACKEND defaults to cli; unknown values are boot errors; resident requires --worker-python and --worker-yt-dlp-version (src/main.rs build_backend, src/backend.rs from_config)",
+      "No silent per-request fallback: executor selects the backend before dispatch; an unavailable manager rejects with 503 SHUTTING_DOWN (test unavailable_resident_backend_rejects_without_cli_fallback)",
+      "Startup validation rejects workers whose protocol, generation, worker, or yt-dlp version metadata does not match configuration (src/resident_worker.rs handshake; tests/resident_backend.rs resident_backend_configuration_failures_are_explicit)",
+      "Fresh YoutubeDL instance per request (worker/ytdlp_worker.py YtDlpRuntime.execute; fixture instance counter proves reuse of the process with a fresh instance: fixture-instance-1/2)",
+      "Per-request temp-directory ownership: controller creates an owned dir under the configured --temp-dir, sends it in the run payload, worker borrows via chdir + TMPDIR/TMP/TEMP and restores both after the request; controller removes the dir on every settle path and a failed removal surfaces TEMP_CLEANUP_FAILURE with the path (src/resident_worker.rs RequestTemp; worker/ytdlp_worker.py _handle_run; tests/resident_backend.rs resident_backend_processes_requests_and_reclaims_temp_dirs; tests/test_ytdlp_worker.py borrow/restore and unusable-temp tests)",
+      "Business error pass-through: worker structured error codes are surfaced verbatim and do not retire the worker (src/resident_worker.rs execute_inner Error arm; tests/resident_backend.rs resident_backend_business_error_keeps_worker_and_surfaces_code; tests/resident_worker_manager.rs updated to FIXTURE_FAILURE)",
+      "Timeout behavior: timeout retires the worker (no retry of the failed request), replacement happens only for the next request, worker tree is reaped via process-group/JobObject (test resident_backend_timeout_is_an_infrastructure_failure_without_retry; manager status Empty)"
+    ]
+  },
+  "scope_and_changes_summary": "Single commit c08f398 (TEAM B), 16 files, +946/-76. New src/backend.rs defines the Backend enum (Cli default, Resident(Option<Arc<Manager>>)) with from_config/start/shutdown and a reside() execution task that returns the RunResponse contract or an infrastructure Failure. src/main.rs adds --backend/--worker-python/--worker-path/--worker-python-path/--worker-yt-dlp-version (env-backed), builds the backend before admission and fails boot on invalid resident configuration. src/executor.rs routes /run to supervisor::supervise (CLI) or backend::reside (resident) before dispatch and logs the active backend name. src/resident_worker.rs gains per-request temp-dir ownership (RequestTemp, created before dispatch, settled on every path), the run payload now carries request_temp, and worker Error frames surface their business code verbatim. src/resident_worker_manager.rs adds for_config/ensure_started/generation_id/worker_id so the worker starts at boot and is replaced per-request after retirement. worker/ytdlp_worker.py validates the optional request_temp field (fail-closed on empty/unknown fields), borrows the directory by chdir + TMPDIR/TMP/TEMP, and restores cwd/env in a finally. src/models.rs and src/supervisor.rs widen Failure/ErrorResponse code from &'static str to String so dynamic worker codes can pass through. Tests: new tests/resident_backend.rs (5 tests) plus temp-dir and business-code coverage added to tests/test_ytdlp_worker.py (14 tests), tests/worker_protocol_interop.rs, tests/resident_worker.rs, and tests/resident_worker_manager.rs. The only non-source change is implement.md Phase 3 checkbox ticks, which match the delivered state.",
+  "test_summary": "All checks green locally (Windows, Python 3.14.0, cargo 1.96.0): python -m unittest tests.test_ytdlp_worker (14/14), cargo test (full suite, 0 failures), cargo fmt --check, cargo clippy --all-targets -- -D warnings. The two findings above are behavioral-gaps/contract-questions, not failing checks; resident-versus-CLI contract-equivalence tests required by design section 9 before the resident backend becomes default are not present in this commit."
+}

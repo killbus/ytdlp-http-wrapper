@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use tokio::sync::{oneshot, OwnedSemaphorePermit};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::resident_worker::{ResidentWorkerConfig, ResidentWorkerError};
@@ -126,11 +127,14 @@ pub(crate) async fn reside(
     queue_ms: u64,
     state: std::sync::Arc<AppState>,
     permit: OwnedSemaphorePermit,
-    reply: oneshot::Sender<Reply>,
+    mut reply: oneshot::Sender<Reply>,
 ) {
     let started = Instant::now();
 
-    if state.shutdown.is_cancelled() {
+    // Mirror the CLI supervisor's pre-dispatch cancellation check: a service
+    // shutdown or an already-disconnected client stops the request before it
+    // leases the single warm worker.
+    if state.shutdown.is_cancelled() || reply.is_closed() {
         info!(
             request_id = %request_id,
             backend = "resident",
@@ -150,9 +154,15 @@ pub(crate) async fn reside(
             Some(manager) => {
                 let generation_id = manager.generation_id().to_owned();
                 let worker_id = manager.worker_id().to_owned();
-                let result = manager
-                    .execute_with_timeout(&request_id, args, deadline)
-                    .await;
+                let result = dispatch_with_cancellation(
+                    manager,
+                    &request_id,
+                    args,
+                    deadline,
+                    &state,
+                    &mut reply,
+                )
+                .await;
                 info!(
                     request_id = %request_id,
                     backend = "resident",
@@ -163,7 +173,7 @@ pub(crate) async fn reside(
                     result = if result.is_ok() { "completed" } else { "failed" },
                     "resident worker request finished"
                 );
-                result.map_err(|error| failure_from_worker_error(&error))
+                result
             }
             None => Err(crate::supervisor::Failure::new(
                 "SHUTTING_DOWN",
@@ -204,6 +214,46 @@ fn error_resident(request_id: &str, failure: &crate::supervisor::Failure) {
         error = %failure.message,
         "resident worker request failed"
     );
+}
+
+/// Dispatches the request on the resident backend while observing client and
+/// service cancellation, mirroring the CLI supervisor's `reply.closed()` select
+/// branch and `state.shutdown.cancelled()` branch.
+///
+/// The cancellation trigger is handed to the manager, which forwards it to the
+/// leased worker. The worker then runs the design section 5 retirement sequence
+/// it already uses for timeouts (cooperative cancel frame, bounded grace,
+/// `terminate_preserving`, replacement for the next request). Because that
+/// sequence must run to completion, the dispatch future is awaited after the
+/// trigger fires instead of being dropped: dropping it would kill the worker
+/// without reclaiming its process tree or its request temp directory, and would
+/// release the admission permit before cleanup finished.
+async fn dispatch_with_cancellation(
+    manager: &std::sync::Arc<ResidentWorkerManager>,
+    request_id: &str,
+    args: Vec<String>,
+    deadline: Duration,
+    state: &std::sync::Arc<AppState>,
+    reply: &mut oneshot::Sender<Reply>,
+) -> Reply {
+    let cancel = CancellationToken::new();
+    let dispatch = manager.execute_with_cancellation(request_id, args, deadline, cancel.clone());
+    // Pinning keeps the dispatch future alive after the select below: awaiting
+    // it to completion is what performs the retirement sequence.
+    tokio::pin!(dispatch);
+
+    tokio::select! {
+        biased;
+        _ = reply.closed() => cancel.cancel(),
+        _ = state.shutdown.cancelled() => cancel.cancel(),
+        result = &mut dispatch => return map_dispatch(result),
+    }
+    map_dispatch(dispatch.await)
+}
+
+/// Converts the manager's worker-level result into the public `Reply` shape.
+fn map_dispatch(result: Result<crate::models::RunResponse, ResidentWorkerError>) -> Reply {
+    result.map_err(|error| failure_from_worker_error(&error))
 }
 
 /// Maps a resident worker error to the supervisor's public `Failure` shape.

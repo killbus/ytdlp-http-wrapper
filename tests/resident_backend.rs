@@ -9,10 +9,14 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
+    time::Duration,
 };
+use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 use ytdlp_http_wrapper::{
     backend::Backend,
+    executor,
+    models::RunRequest,
     resident_worker::ResidentWorkerConfig,
     resident_worker_manager::{ResidentWorkerManager, ResidentWorkerManagerStatus},
     routes::{self, AppState},
@@ -61,6 +65,21 @@ fn runtime_fixture_config(python: PathBuf, worker_id: &str) -> ResidentWorkerCon
     let mut config = config(python, worker_id);
     config.worker_path = fixture_path().join("resident_worker_runtime.py");
     config
+}
+
+/// Polls the manager until it reports `expected`, so retirement (which is
+/// bounded but asynchronous) can be asserted without sleeping on a guess.
+async fn wait_for_status(
+    manager: &ResidentWorkerManager,
+    expected: ResidentWorkerManagerStatus,
+) -> ResidentWorkerManagerStatus {
+    loop {
+        let status = manager.status().await;
+        if status == expected {
+            return status;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn state_with(
@@ -172,6 +191,88 @@ async fn resident_backend_business_error_keeps_worker_and_surfaces_code() {
     state.backend.shutdown().await;
 }
 
+/// A dropped client must cancel the resident request instead of letting it run
+/// to its deadline while holding the only warm worker. This mirrors the CLI
+/// supervisor's `reply.closed()` branch and is the round-1 review finding 1 fix
+/// (see `.trellis/tasks/11-03-resident-worker-runtime-upgrade/review/
+/// owner-decisions.md`, option (a)).
+#[tokio::test]
+async fn resident_backend_client_cancellation_retires_the_active_worker() {
+    let Some(python) = find_python() else {
+        eprintln!("skipping resident backend test because Python is unavailable");
+        return;
+    };
+    let parent = tempfile::tempdir().unwrap();
+    let manager = Arc::new(ResidentWorkerManager::for_config(runtime_fixture_config(
+        python,
+        "request-slow",
+    )));
+    // One permit: the cancelled request must release admission again, and only
+    // after its worker and temp directory are reclaimed.
+    let state = Arc::new(
+        AppState::new(
+            PathBuf::from("non-existent-yt-dlp"),
+            1,
+            Some(parent.path().into()),
+        )
+        .with_backend(Backend::Resident(Some(manager.clone()))),
+    );
+    state.backend.start().await.unwrap();
+
+    let active = tokio::spawn(executor::execute(
+        RunRequest {
+            args: vec!["fixture".into()],
+            // Far longer than the test's own bound: if cancellation is not
+            // observed, the request would run for two minutes.
+            timeout_seconds: Some(120),
+        },
+        state.clone(),
+    ));
+    timeout(
+        Duration::from_secs(20),
+        wait_for_status(&manager, ResidentWorkerManagerStatus::Busy),
+    )
+    .await
+    .expect("the slow fixture request should lease the worker");
+
+    // Dropping the handler closes the reply channel, exactly like a client that
+    // disconnects mid-request.
+    active.abort();
+    let _ = active.await;
+
+    timeout(
+        Duration::from_secs(20),
+        wait_for_status(&manager, ResidentWorkerManagerStatus::Empty),
+    )
+    .await
+    .expect("a cancelled request must retire its worker instead of running to the deadline");
+    assert_eq!(manager.status().await, ResidentWorkerManagerStatus::Empty);
+
+    // Cleanup finished before admission was released, and the owned per-request
+    // temp directory was reclaimed.
+    timeout(
+        Duration::from_secs(10),
+        wait_for_permits(state.semaphore.clone(), 1),
+    )
+    .await
+    .expect("the cancelled request must release its admission permit");
+    let owned = std::fs::read_dir(parent.path())
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        owned.is_empty(),
+        "the cancelled request's owned temp directory must be removed"
+    );
+
+    state.backend.shutdown().await;
+}
+
+async fn wait_for_permits(semaphore: Arc<tokio::sync::Semaphore>, expected: usize) {
+    while semaphore.available_permits() != expected {
+        sleep(Duration::from_millis(10)).await;
+    }
+}
 #[tokio::test]
 async fn unavailable_resident_backend_rejects_without_cli_fallback() {
     let state = state_with(None, None);

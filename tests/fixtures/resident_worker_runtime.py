@@ -112,6 +112,13 @@ elif worker_id == "manager-shutdown":
     sys.exit(0)
 elif worker_id == "request-timeout":
     time.sleep(30)
+elif worker_id == "request-slow":
+    # Long enough that a cancelled client must be what stops the request: the
+    # request deadline used by the cancellation test is far shorter. Like the
+    # real worker, this fixture does not read frames while it executes, so the
+    # cooperative cancel frame cannot be proven to apply and the worker is
+    # retired after the bounded grace period.
+    time.sleep(120)
 elif worker_id == "descendant-timeout":
     heartbeat = str(request["payload"]["args"][0])
     subprocess.Popen(

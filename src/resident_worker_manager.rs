@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use tokio::{sync::Mutex, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     models::RunResponse,
@@ -76,7 +77,8 @@ impl ResidentWorkerManager {
         request_id: &str,
         args: Vec<String>,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_inner(request_id, args, None).await
+        self.execute_inner(request_id, args, None, CancellationToken::new())
+            .await
     }
 
     pub async fn execute_with_timeout(
@@ -85,7 +87,23 @@ impl ResidentWorkerManager {
         args: Vec<String>,
         duration: Duration,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_inner(request_id, args, Some(duration)).await
+        self.execute_inner(request_id, args, Some(duration), CancellationToken::new())
+            .await
+    }
+
+    /// Bounded-deadline dispatch that also observes the caller's cancellation
+    /// trigger. The caller cancels when the client disconnects or the service
+    /// shuts down; the leased worker then runs the design section 5 retirement
+    /// sequence (cooperative cancel frame, bounded grace, terminate, replace).
+    pub async fn execute_with_cancellation(
+        &self,
+        request_id: &str,
+        args: Vec<String>,
+        duration: Duration,
+        cancel: CancellationToken,
+    ) -> Result<RunResponse, ResidentWorkerError> {
+        self.execute_inner(request_id, args, Some(duration), cancel)
+            .await
     }
 
     pub async fn status(&self) -> ResidentWorkerManagerStatus {
@@ -117,6 +135,7 @@ impl ResidentWorkerManager {
         request_id: &str,
         args: Vec<String>,
         duration: Option<Duration>,
+        cancel: CancellationToken,
     ) -> Result<RunResponse, ResidentWorkerError> {
         self.ensure_accepting()?;
         let _execution = self.execution_gate.lock().await;
@@ -140,7 +159,7 @@ impl ResidentWorkerManager {
         let result = match duration {
             Some(duration) => {
                 worker
-                    .execute_with_timeout(request_id, args, duration)
+                    .execute_with_cancellation(request_id, args, duration, cancel)
                     .await
             }
             None => worker.execute(request_id, args).await,
