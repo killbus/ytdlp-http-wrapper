@@ -11,7 +11,8 @@
 //! every result (the result frame's `stdout` field) and supports
 //! `sleep:<seconds>` / `crash:eof` request args, so concurrency, saturation,
 //! and retirement tests pick their timing margins through request args
-//! without new worker-id scenarios.
+//! without new worker-id scenarios. The `slow-start` scenario delays hello
+//! to exercise replacement deadlines.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -525,6 +526,175 @@ async fn pool_replaces_retired_slot_and_reports_per_slot_health() {
     );
     assert_eq!(health.retires, 1);
     assert_eq!(health.replacements, 1);
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pool_replacement_preserves_absolute_execution_deadline() {
+    let Some(python) = find_python() else {
+        eprintln!("skipping delayed replacement test because Python is unavailable");
+        return;
+    };
+    let mut config = base_config(python);
+    config.worker_id = "slow-start".into();
+    let manager = ResidentWorkerManager::start(config).await.unwrap();
+    let pool = manager.pool();
+
+    let crashed = pool
+        .dispatch(
+            "crash-before-delayed-replacement",
+            vec!["crash:eof".to_owned()],
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .err()
+        .expect("the crashed worker must fail the request");
+    assert_eq!(crashed.code(), "WORKER_PROTOCOL_FAILURE");
+    assert_eq!(pool.health().slots[0].state, SlotState::Retired);
+
+    // A 2s execution fits the original 3s budget, but not the <=1s left
+    // after the fixture's 2s handshake. Cleanup may extend response latency.
+    let expired = pool
+        .dispatch(
+            "deadline-includes-replacement",
+            vec!["sleep:2.0".to_owned()],
+            tokio::time::Instant::now() + Duration::from_secs(3),
+        )
+        .await
+        .err()
+        .expect("replacement must not renew the original execution budget");
+    assert!(
+        matches!(expired.code(), "WORKER_TIMEOUT" | WORKER_POOL_SATURATED),
+        "unexpected delayed replacement error: {expired}"
+    );
+    assert_eq!(pool.health().replacements, 1);
+
+    // If a heavily loaded host used the whole budget in the handshake, the
+    // replacement is healthy; retire it so the generous case also replaces.
+    if pool.health().slots[0].state == SlotState::Idle {
+        let crashed = pool
+            .dispatch(
+                "crash-before-generous-replacement",
+                vec!["crash:eof".to_owned()],
+                tokio::time::Instant::now() + Duration::from_secs(10),
+            )
+            .await
+            .err()
+            .expect("the crashed worker must fail the request");
+        assert_eq!(crashed.code(), "WORKER_PROTOCOL_FAILURE");
+    }
+    assert_eq!(pool.health().slots[0].state, SlotState::Retired);
+
+    // 10s allows the same 2s handshake plus 2s execution with 6s headroom.
+    let response = pool
+        .dispatch(
+            "generous-delayed-replacement",
+            vec!["sleep:2.0".to_owned()],
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.exit_code, 0);
+    assert_eq!(served_by(&response.stdout, "sleep:2.0"), "slow-start");
+    let health = pool.health();
+    assert_eq!(health.replacements, 2);
+    assert_eq!(health.retires, 2);
+    assert_eq!(health.slots[0].state, SlotState::Idle);
+    assert_eq!(health.slots[0].retired_reason, None);
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pool_replacement_exhausting_deadline_saturates_without_retirement() {
+    let Some(python) = find_python() else {
+        eprintln!("skipping exhausted replacement test because Python is unavailable");
+        return;
+    };
+    let mut config = base_config(python);
+    config.worker_id = "slow-start".into();
+    let manager = ResidentWorkerManager::start(config).await.unwrap();
+    let pool = manager.pool();
+
+    let crashed = pool
+        .dispatch(
+            "crash-before-exhausted-replacement",
+            vec!["crash:eof".to_owned()],
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .err()
+        .expect("the crashed worker must fail the request");
+    assert_eq!(crashed.code(), "WORKER_PROTOCOL_FAILURE");
+
+    // The 2s handshake exhausts the 500ms budget before any run is sent.
+    // Sending this crash request would retire the otherwise healthy worker.
+    let expired = pool
+        .dispatch(
+            "no-execution-after-expiry",
+            vec!["crash:eof".to_owned()],
+            tokio::time::Instant::now() + Duration::from_millis(500),
+        )
+        .await
+        .err()
+        .expect("a handshake that exhausts the deadline must saturate");
+    assert_eq!(expired.code(), WORKER_POOL_SATURATED);
+    let health = pool.health();
+    assert_eq!(health.replacements, 1);
+    assert_eq!(health.retires, 1);
+    assert_eq!(health.slots[0].state, SlotState::Idle);
+    assert_eq!(health.slots[0].retired_reason, None);
+
+    let response = pool
+        .dispatch(
+            "reuse-after-expiry",
+            vec!["still-healthy".to_owned()],
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(served_by(&response.stdout, "still-healthy"), "slow-start");
+    assert_eq!(pool.health(), health);
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn pool_unbounded_replacement_keeps_relative_execution_timeout() {
+    let Some(python) = find_python() else {
+        eprintln!("skipping relative replacement test because Python is unavailable");
+        return;
+    };
+    let mut config = base_config(python);
+    config.worker_id = "slow-start".into();
+    let manager = ResidentWorkerManager::start(config).await.unwrap();
+    let pool = manager.pool();
+
+    let crashed = pool
+        .dispatch_unbounded(
+            "crash-before-relative-replacement",
+            vec!["crash:eof".to_owned()],
+            Some(Duration::from_secs(10)),
+        )
+        .await
+        .err()
+        .expect("the crashed worker must fail the request");
+    assert_eq!(crashed.code(), "WORKER_PROTOCOL_FAILURE");
+
+    // Unlike bounded dispatch, the compatibility timeout covers only the
+    // 2s execution, not the additional 2s replacement handshake.
+    let response = pool
+        .dispatch_unbounded(
+            "relative-delayed-replacement",
+            vec!["sleep:2.0".to_owned()],
+            Some(Duration::from_secs(3)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.exit_code, 0);
+    assert_eq!(served_by(&response.stdout, "sleep:2.0"), "slow-start");
+    let health = pool.health();
+    assert_eq!(health.replacements, 1);
+    assert_eq!(health.retires, 1);
+    assert_eq!(health.slots[0].state, SlotState::Idle);
     manager.shutdown().await.unwrap();
 }
 

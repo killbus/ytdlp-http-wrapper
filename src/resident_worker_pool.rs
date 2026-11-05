@@ -35,10 +35,15 @@ use crate::{
     resident_worker::{ResidentWorker, ResidentWorkerConfig, ResidentWorkerError},
 };
 
-/// Absolute deadline exceeded while waiting for a free slot: every slot is
-/// leased and the request's own deadline expired before a lease was granted.
+/// Absolute deadline exceeded before execution: waiting for a free slot or
+/// starting its replacement consumed the request's remaining budget.
 /// Mapped to HTTP 503 by the executor (design.md section 5).
 pub const WORKER_POOL_SATURATED: &str = "WORKER_POOL_SATURATED";
+
+enum ExecutionBudget {
+    Deadline(Instant),
+    RelativeTimeout(Option<Duration>),
+}
 
 /// Per-slot state (design.md section 4): a live worker maps to `Idle`/`Busy`,
 /// a missing worker with a retained retirement reason maps to `Retired`, and a
@@ -284,10 +289,10 @@ impl ResidentWorkerPool {
     }
 
     /// Dispatches one admitted request against an absolute deadline
-    /// (`deadline` = request-start `Instant` + timeout). Queue time counts
-    /// against it: the remaining duration is what the worker's bounded
-    /// `execute_with_timeout` receives (design.md section 5; observation O2 -
-    /// remaining duration, not the full timeout).
+    /// (`deadline` = request-start `Instant` + timeout). Queue and replacement
+    /// time count against it: the worker's bounded `execute_with_timeout`
+    /// receives only the remaining duration (design.md section 5; observation
+    /// O2 - remaining duration, not the full timeout).
     pub async fn dispatch(
         &self,
         request_id: &str,
@@ -296,16 +301,17 @@ impl ResidentWorkerPool {
     ) -> Result<RunResponse, ResidentWorkerError> {
         self.ensure_accepting()?;
         let mut lease = self.acquire_lease(Some(deadline)).await?;
-        // Queue time counts against the absolute deadline: the worker's
-        // bounded execute_with_timeout receives only the REMAINING duration
-        // measured after the lease was granted (design.md section 5, O2).
-        let remaining = deadline.saturating_duration_since(Instant::now());
         // Settle on EVERY exit path (success, error, and cancellation via the
         // lease's Drop): run_leased takes the worker out, so leaving the
         // entry point without settling would drop a warm worker or skip the
         // retirement record.
         let (result, worker) = self
-            .run_leased(&mut lease, request_id, args, Some(remaining))
+            .run_leased(
+                &mut lease,
+                request_id,
+                args,
+                ExecutionBudget::Deadline(deadline),
+            )
             .await;
         self.settle(&mut lease, &result, worker).await;
         lease.release();
@@ -328,7 +334,12 @@ impl ResidentWorkerPool {
         self.ensure_accepting()?;
         let mut lease = self.acquire_lease(None).await?;
         let (result, worker) = self
-            .run_leased(&mut lease, request_id, args, exec_timeout)
+            .run_leased(
+                &mut lease,
+                request_id,
+                args,
+                ExecutionBudget::RelativeTimeout(exec_timeout),
+            )
             .await;
         self.settle(&mut lease, &result, worker).await;
         lease.release();
@@ -403,7 +414,7 @@ impl ResidentWorkerPool {
         lease: &mut SlotLease,
         request_id: &str,
         args: Vec<String>,
-        exec_timeout: Option<Duration>,
+        budget: ExecutionBudget,
     ) -> (
         Result<RunResponse, ResidentWorkerError>,
         Option<ResidentWorker>,
@@ -448,18 +459,20 @@ impl ResidentWorkerPool {
         // retirement (see SlotLease::drop).
         lease.worker_taken = true;
 
-        // Per-slot lease sequence, identical to the manager's (design.md 4):
-        // take the worker, execute bounded, then settle decides put-back-iff-
-        // healthy. The deadline paths both route through the worker's bounded
-        // execute_with_timeout; `None` keeps the pre-pool manager's unbounded
-        // worker-call semantics (design.md section 8).
-        let result = match exec_timeout {
-            Some(timeout) => {
-                // For the absolute-deadline entry point the caller converts
-                // the deadline to a remaining duration before calling in, so
-                // queue time already counts against it (design.md section 5).
-                worker.execute_with_timeout(request_id, args, timeout).await
+        // Measure only after all lease/replacement awaits, immediately before
+        // execution. The compatibility path retains its relative timeout.
+        let exec_timeout = match budget {
+            ExecutionBudget::Deadline(deadline) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return (Err(saturated()), Some(worker));
+                }
+                Some(remaining)
             }
+            ExecutionBudget::RelativeTimeout(timeout) => timeout,
+        };
+        let result = match exec_timeout {
+            Some(timeout) => worker.execute_with_timeout(request_id, args, timeout).await,
             None => worker.execute(request_id, args).await,
         };
         (result, Some(worker))
@@ -676,6 +689,6 @@ impl Drop for SlotLease {
 fn saturated() -> ResidentWorkerError {
     ResidentWorkerError::manager_error(
         WORKER_POOL_SATURATED,
-        "no resident worker slot was free before the request deadline",
+        "no resident worker was ready to execute before the request deadline",
     )
 }

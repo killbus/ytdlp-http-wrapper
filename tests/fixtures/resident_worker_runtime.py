@@ -40,6 +40,9 @@ def write_frame(
 
 
 worker_id = os.environ["YTDLP_WORKER_ID"]
+if worker_id == "slow-start":
+    # Delay hello so both boot and lazy replacement pay the handshake cost.
+    time.sleep(2.0)
 write_frame(
     "hello",
     "startup",
