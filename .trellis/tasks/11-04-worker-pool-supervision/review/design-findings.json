@@ -1,0 +1,73 @@
+{
+  "task_path": ".trellis/tasks/11-04-worker-pool-supervision",
+  "artifact": "design.md",
+  "round": 2,
+  "reviewer": "design-reviewer",
+  "reviewed_at": "2026-11-04",
+  "base_commit": "c08f398",
+  "design_sha256": "67E7FC7E0B17BAEBE8DA8580AFFF39CA7354E5A10BBBC51F975B9CF46BEF61F4",
+  "verdict": "approve",
+  "summary": "Round-2 re-review of the revised design.md. All 7 round-1 findings (F1-F7) are verified closed by reading the revised sections directly, not the revision report. The two [ASSUMPTION] markers (relabelled B1 scope, new fairness model) are correctly placed, justified, and carry documented alternatives. No new D1-D8 violations and no new untraceable decisions. The design is ready for Phase 1.4 (task start); two non-blocking observations are recorded for the implementer.",
+  "round1_findings_status": [
+    {
+      "id": "F1",
+      "status": "closed",
+      "verification": "Section 6 Boot now states strict fail-fast: 'if any slot fails to start, start returns that error and the whole boot fails before any request is admitted', cites the baseline rule (src/main.rs:215 backend.start().await? verified accurate; src/backend.rs start propagates the first ensure_started error), and explicitly rejects partial-degraded boot with a reason ('it would relax that preserved rule; it is not a design option here'). The contradictory 'slot absent / remaining slots serve / reported at boot' wording is gone. Section 8's capacity-1 identity claim is now consistent with it."
+    },
+    {
+      "id": "F2",
+      "status": "closed",
+      "verification": "Section 4 PoolSlot now has retired_reason: Option<&'static str> with a complete four-state derivation rule (live worker -> Idle/Busy; no worker + reason -> Retired with reason; neither -> Absent; successful replacement clears the reason so the slot returns to Idle/Busy). Section 6 sets it on every retirement, clears it on successful replacement start, and retains it on replacement-start failure. Section 7 SlotHealth carries retired_reason: Option<&'static str> ('Some iff state == Retired'); the pool-wide retiring_reason_last field is explicitly dropped with a non-duplication rationale. Section 10 AC5 now asserts each slot's state, the retired slot's retired_reason, and the replacements/retires counters."
+    },
+    {
+      "id": "F3",
+      "status": "closed",
+      "verification": "Section 2 now says 'slot allocation (first-available in slot index order, section 4)'; section 4 Selection explicitly reconciles: 'This is first-available-in-index-order (not least-recently-occupied) and therefore biases load toward low-index slots; that bias is intentional and is the same policy named in section 2.' One policy, both places."
+    },
+    {
+      "id": "F4",
+      "status": "closed",
+      "verification": "Section 8 scopes the claim to 'behaviorally identical to c08f398 for the existing test surface and for uncontended requests', names the deliberate difference for contended requests (unbounded global execution_gate wait at src/resident_worker_manager.rs:122, verified accurate, versus deadline-bounded queue wait), cites the prd sentences mandating the bounded wait, and declares it 'not a regression'. AC6 framing is now honest."
+    },
+    {
+      "id": "F5",
+      "status": "closed",
+      "verification": "Section 5 dispatch signature is now dispatch(request_id, args, deadline: Instant), an absolute anchor, with the baseline call sites cited (src/backend.rs:125 'deadline: Duration' and src/executor.rs:79 duration computation, both verified accurate) and the unit's change named (subtract elapsed time, hand the remaining duration to execute_with_timeout, which stays the only execution path). Wait-loop shape is specified: notified() future armed before scanning, scan, await if none, re-arm before retrying the scan so a wakeup between scan and await cannot be missed, repeat until lease or deadline. Fairness is stated as [ASSUMPTION] (immediate-lease preference for new arrivals, no FIFO queue) with a no-starvation argument (every wait is deadline-bounded, no queue structure) and the FIFO alternative named as not adopted. B1 is relabelled: the wait semantics are marked 'prd.md requirement 4 / AC3; prd-mandated, not a design choice' and only the absence of a separate queue-depth configuration carries the assumption marker."
+    },
+    {
+      "id": "F6",
+      "status": "closed",
+      "verification": "Section 10 AC2 no longer says plain-stdout echo. It states the fixture's stdout is the length-prefixed frame stream, that worker_id must travel inside the result frame payload (e.g. the result's stdout field, readable from the frame) or on stderr (the existing stderr-diagnostic pattern), and 'never as plain-text stdout'. The fixture is to be extended to report YTDLP_WORKER_ID on one of those in-band channels."
+    },
+    {
+      "id": "F7",
+      "status": "closed",
+      "verification": "Section 7 now cites 'observability endpoint is parent implement.md Phase 7 Operational hardening; parent design.md section 10 defines the metrics inventory'. Verified: parent implement.md has '## Phase 7: Operational hardening' and parent design.md section 10 is the metrics inventory. Section 9's 'Phase 6/Phase 7' shorthand is left as-is, which is acceptable since the precise citation now lives in section 7."
+    }
+  ],
+  "new_violations": [],
+  "new_untraceable_decisions": [],
+  "assumption_review": [
+    {
+      "id": "B1",
+      "status": "still_adequate",
+      "note": "Relabelled as requested: wait semantics are prd-mandated (requirement 4 / AC3) and only the no-queue-depth-knob choice is marked [ASSUMPTION], with the YAGNI rationale and the immediate-rejection alternative documented."
+    },
+    {
+      "id": "FAIRNESS",
+      "status": "properly_marked",
+      "note": "The new immediate-lease-preference choice has no prd/spec/baseline source (the prd specifies wait semantics, not waiter ordering) and correctly carries [ASSUMPTION] with a no-starvation argument and the FIFO alternative named. No owner input required; it is an internal concurrency detail of a bounded, deadline-capped wait."
+    }
+  ],
+  "non_blocking_observations": [
+    {
+      "id": "O1",
+      "note": "Under strict fail-fast boot (section 6) an Absent slot ('never started') can in fact only exist if a boot path that tolerates absence is added later; at runtime a slot that had a worker is either live or Retired (replacement failure retains retired_reason). The Absent enum value is harmless completeness for health() and costs nothing, but the implementer should not write a test expecting Absent at runtime and should keep the section 4 derivation rule as the single source of truth for state mapping."
+    },
+    {
+      "id": "O2",
+      "note": "Section 5 step 2 says 'On a hit, execute exactly as the manager does today' while the surrounding text establishes the execution duration is the remaining time at lease time, not the full request timeout. The intended reading (same sequence, remaining duration) is clear from the section intro, but the implementer should code the remaining-duration handoff rather than a full-duration one; no design.md change required."
+    }
+  ],
+  "open_questions_required": false
+}
