@@ -31,9 +31,26 @@ impl ResidentWorkerManager {
     /// letting a bad resident configuration fail before any request is
     /// admitted.
     pub fn for_config(config: ResidentWorkerConfig) -> Self {
+        Self::for_pool_size(config, 1)
+    }
+
+    /// Builds the facade over a pool of `capacity` slots. The resident
+    /// backend uses this so `--worker-pool-size` reaches the pool
+    /// (design.md section 2/8); the public API still delegates to the pool
+    /// unchanged for existing callers and tests.
+    pub fn for_pool_size(config: ResidentWorkerConfig, capacity: usize) -> Self {
         Self {
-            pool: ResidentWorkerPool::for_config(&config, 1),
+            pool: ResidentWorkerPool::for_config(&config, capacity),
         }
+    }
+
+    /// The underlying pool. The resident backend dispatches against it with
+    /// the request-start-anchored absolute deadline so queue time counts
+    /// against it (design.md section 5); the facade's own entry points keep
+    /// the pre-pool unbounded wait semantics for existing callers and tests
+    /// (section 8).
+    pub fn pool(&self) -> &ResidentWorkerPool {
+        &self.pool
     }
 
     /// Starts the worker if it has not started yet. Idempotent for the happy

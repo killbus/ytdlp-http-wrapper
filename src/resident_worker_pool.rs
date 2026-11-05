@@ -478,19 +478,6 @@ impl ResidentWorkerPool {
     ) {
         lease.settled = true;
         let slot = &lease.core.slots[lease.slot_index];
-        if result.is_ok() {
-            // Healthy path: store the live worker back so the slot stays warm
-            // (put-back-iff-healthy). run_leased always returns Some(worker)
-            // on Ok; None can only arrive on the cancellation path, where the
-            // slot is retired below.
-            if let Some(worker) = worker {
-                *slot.worker.lock().await = Some(worker);
-                slot.has_worker.store(true, Ordering::Release);
-            } else {
-                self.retire_slot(lease, "WORKER_PROTOCOL_FAILURE");
-            }
-            return;
-        }
         // Replacement-start failure (section 6): the slot never had the
         // replacement worker, its stored worker is still None, and its
         // retired_reason is RETAINED from the original retirement - no new
@@ -502,16 +489,25 @@ impl ResidentWorkerPool {
         {
             return;
         }
+        // Put-back-iff-healthy (pre-pool manager semantics): the worker's
+        // OWN health flag is authoritative, not the request result - a
+        // structured business error fails the request (Err) but leaves the
+        // worker healthy, so it must be stored back and the slot stays warm.
+        if let Some(worker) = worker.filter(|worker| worker.is_healthy()) {
+            *slot.worker.lock().await = Some(worker);
+            slot.has_worker.store(true, Ordering::Release);
+            return;
+        }
+        // Unhealthy instance (or the worker was already dropped with a
+        // cancelled future): record the retirement so the slot derives
+        // `Retired` until a replacement clears the reason (design.md
+        // section 4/6).
         let reason: &'static str = match result.as_ref().err().map(|e| e.code()) {
             Some("WORKER_TIMEOUT") => "WORKER_TIMEOUT",
             Some("WORKER_PROTOCOL_FAILURE") => "WORKER_PROTOCOL_FAILURE",
             Some("WORKER_OUTPUT_LIMIT") => "WORKER_OUTPUT_LIMIT",
             _ => "WORKER_UNHEALTHY",
         };
-        // The worker is dropped here (unhealthy instance); record the
-        // retirement so the slot derives `Retired` until a replacement
-        // clears the reason (design.md section 4/6).
-        drop(worker);
         self.retire_slot(lease, reason);
     }
 
