@@ -1,13 +1,16 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+//! Thin compatibility facade over the bounded worker pool (design.md section
+//! 2): `ResidentWorkerManager` is a pool of capacity 1. Its public API and
+//! `ResidentWorkerManagerStatus` semantics stay identical to the pre-pool
+//! manager for existing callers and tests; per-request deadline clamping stays
+//! in the executor, so this facade keeps the pre-pool (unbounded gate wait)
+//! dispatch semantics (design.md section 8).
 
-use tokio::{sync::Mutex, time::Duration};
+use tokio::time::{Duration, Instant};
 
 use crate::{
     models::RunResponse,
-    resident_worker::{ResidentWorker, ResidentWorkerConfig, ResidentWorkerError},
+    resident_worker::{ResidentWorkerConfig, ResidentWorkerError},
+    resident_worker_pool::ResidentWorkerPool,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,24 +22,17 @@ pub enum ResidentWorkerManagerStatus {
 }
 
 pub struct ResidentWorkerManager {
-    config: ResidentWorkerConfig,
-    worker: Arc<Mutex<Option<ResidentWorker>>>,
-    execution_gate: Mutex<()>,
-    busy: AtomicBool,
-    shutting_down: AtomicBool,
+    pool: ResidentWorkerPool,
 }
 
 impl ResidentWorkerManager {
     /// Builds a manager without starting its worker. Used by the resident
     /// backend so the spawn + handshake happen at boot (`ensure_started`),
-    /// letting a bad resident configuration fail before any request is admitted.
+    /// letting a bad resident configuration fail before any request is
+    /// admitted.
     pub fn for_config(config: ResidentWorkerConfig) -> Self {
         Self {
-            config,
-            worker: Arc::new(Mutex::new(None)),
-            execution_gate: Mutex::new(()),
-            busy: AtomicBool::new(false),
-            shutting_down: AtomicBool::new(false),
+            pool: ResidentWorkerPool::for_config(&config, 1),
         }
     }
 
@@ -44,31 +40,21 @@ impl ResidentWorkerManager {
     /// path; a start failure leaves the manager empty so the next request
     /// retries the start (single-worker replacement behavior).
     pub async fn ensure_started(&self) -> Result<(), ResidentWorkerError> {
-        if self.worker.lock().await.is_some() {
-            return Ok(());
-        }
-        let worker = ResidentWorker::start(self.config.clone()).await?;
-        *self.worker.lock().await = Some(worker);
-        Ok(())
+        self.pool.start().await
     }
 
     pub fn generation_id(&self) -> &str {
-        &self.config.generation_id
+        self.pool.generation_id()
     }
 
     pub fn worker_id(&self) -> &str {
-        &self.config.worker_id
+        self.pool.primary_worker_id()
     }
 
     pub async fn start(config: ResidentWorkerConfig) -> Result<Self, ResidentWorkerError> {
-        let worker = ResidentWorker::start(config.clone()).await?;
-        Ok(Self {
-            config,
-            worker: Arc::new(Mutex::new(Some(worker))),
-            execution_gate: Mutex::new(()),
-            busy: AtomicBool::new(false),
-            shutting_down: AtomicBool::new(false),
-        })
+        let manager = Self::for_config(config);
+        manager.pool.start().await?;
+        Ok(manager)
     }
 
     pub async fn execute(
@@ -76,7 +62,7 @@ impl ResidentWorkerManager {
         request_id: &str,
         args: Vec<String>,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_inner(request_id, args, None).await
+        self.pool.dispatch_unbounded(request_id, args, None).await
     }
 
     pub async fn execute_with_timeout(
@@ -85,81 +71,39 @@ impl ResidentWorkerManager {
         args: Vec<String>,
         duration: Duration,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.execute_inner(request_id, args, Some(duration)).await
+        self.pool
+            .dispatch_unbounded(request_id, args, Some(duration))
+            .await
     }
 
     pub async fn status(&self) -> ResidentWorkerManagerStatus {
-        if self.shutting_down.load(Ordering::Acquire) {
+        // Shutting-down wins before any per-slot state, matching the pre-pool
+        // manager's status ordering (its `ShuttingDown` was checked first).
+        if self.pool.is_shutting_down() {
             return ResidentWorkerManagerStatus::ShuttingDown;
         }
-        if self.busy.load(Ordering::Acquire) {
-            return ResidentWorkerManagerStatus::Busy;
-        }
-        if self.worker.lock().await.is_some() {
-            ResidentWorkerManagerStatus::Ready
-        } else {
-            ResidentWorkerManagerStatus::Empty
+        match self.pool.health().slots[0].state {
+            crate::resident_worker_pool::SlotState::Busy => ResidentWorkerManagerStatus::Busy,
+            crate::resident_worker_pool::SlotState::Idle => ResidentWorkerManagerStatus::Ready,
+            crate::resident_worker_pool::SlotState::Retired => ResidentWorkerManagerStatus::Empty,
+            crate::resident_worker_pool::SlotState::Absent => ResidentWorkerManagerStatus::Empty,
         }
     }
 
     pub async fn shutdown(&self) -> Result<(), ResidentWorkerError> {
-        self.shutting_down.store(true, Ordering::Release);
-        let _execution = self.execution_gate.lock().await;
-        let worker = self.worker.lock().await.take();
-        match worker {
-            Some(worker) => worker.shutdown().await,
-            None => Ok(()),
-        }
+        self.pool.shutdown().await
     }
 
-    async fn execute_inner(
+    /// Test-only: a bounded, absolute-deadline dispatch against the underlying
+    /// pool. Production dispatch goes through the backend, which owns the
+    /// deadline anchor.
+    #[doc(hidden)]
+    pub async fn dispatch_for_test(
         &self,
         request_id: &str,
         args: Vec<String>,
-        duration: Option<Duration>,
+        deadline: Instant,
     ) -> Result<RunResponse, ResidentWorkerError> {
-        self.ensure_accepting()?;
-        let _execution = self.execution_gate.lock().await;
-        self.ensure_accepting()?;
-        self.busy.store(true, Ordering::Release);
-
-        let mut worker = match self.worker.lock().await.take() {
-            Some(worker) => worker,
-            None => match ResidentWorker::start(self.config.clone()).await {
-                Ok(worker) => worker,
-                Err(error) => {
-                    self.busy.store(false, Ordering::Release);
-                    return Err(ResidentWorkerError::manager_error(
-                        "WORKER_REPLACEMENT_FAILURE",
-                        format!("replacement worker failed to start: {error}"),
-                    ));
-                }
-            },
-        };
-
-        let result = match duration {
-            Some(duration) => {
-                worker
-                    .execute_with_timeout(request_id, args, duration)
-                    .await
-            }
-            None => worker.execute(request_id, args).await,
-        };
-
-        if worker.is_healthy() {
-            *self.worker.lock().await = Some(worker);
-        }
-        self.busy.store(false, Ordering::Release);
-        result
-    }
-
-    fn ensure_accepting(&self) -> Result<(), ResidentWorkerError> {
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(ResidentWorkerError::manager_error(
-                "WORKER_MANAGER_SHUTTING_DOWN",
-                "resident worker manager is shutting down",
-            ));
-        }
-        Ok(())
+        self.pool.dispatch(request_id, args, deadline).await
     }
 }
