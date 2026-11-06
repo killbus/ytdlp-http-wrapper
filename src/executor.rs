@@ -112,10 +112,15 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
             ));
         }
         crate::backend::Backend::Resident(_) => {
+            // Anchor the absolute deadline at request start (design.md section
+            // 5) so semaphore queue time and the pool's slot wait both count
+            // against it; the pool then hands the worker only the remaining
+            // duration.
+            let deadline = request_started + duration;
             state.tasks.spawn(crate::backend::reside(
                 request_id.clone(),
                 payload.args,
-                duration,
+                deadline,
                 queue_ms,
                 state.clone(),
                 permit,
@@ -126,7 +131,10 @@ pub async fn execute(payload: RunRequest, state: Arc<AppState>) -> impl IntoResp
     let response = match receiver.await {
         Ok(Ok(response)) => (StatusCode::OK, Json(serde_json::json!(response))),
         Ok(Err(e)) => failure(
-            if e.code == "SHUTTING_DOWN" {
+            // SHUTTING_DOWN and pool saturation are both "cannot serve this
+            // request right now" rejections, so both map to 503 (design.md
+            // section 5: WORKER_POOL_SATURATED gets the same treatment).
+            if e.code == "SHUTTING_DOWN" || e.code == "WORKER_POOL_SATURATED" {
                 StatusCode::SERVICE_UNAVAILABLE
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR

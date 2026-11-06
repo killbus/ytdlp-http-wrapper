@@ -95,6 +95,14 @@ struct Cli {
         help = "Pinned yt-dlp version the resident worker handshake must report"
     )]
     worker_yt_dlp_version: Option<String>,
+
+    #[arg(
+        long = "worker-pool-size",
+        env = "WORKER_POOL_SIZE",
+        default_value = "1",
+        help = "Resident worker pool capacity (number of workers); must be at least 1"
+    )]
+    worker_pool_size: usize,
 }
 
 async fn install_with_retry(
@@ -148,13 +156,14 @@ fn build_backend(
             let expected_version = cli.worker_yt_dlp_version.clone().ok_or(
                 "backend=resident requires --worker-yt-dlp-version (the pinned yt-dlp version the worker handshake must report)",
             )?;
-            ytdlp_http_wrapper::backend::Backend::from_config(
+            ytdlp_http_wrapper::backend::Backend::from_config_with_pool_size(
                 "resident",
                 python,
                 worker_path,
                 python_path_entries,
                 &expected_version,
                 temp_dir,
+                cli.worker_pool_size,
             )
             .map_err(Into::into)
         }
@@ -200,6 +209,15 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     if max_concurrent == 0 {
         return Err("max-concurrent must be greater than zero".into());
+    }
+    // Boot-time pool validation: 0 fails here (a non-numeric value is
+    // rejected by clap at parse), before any request is admitted, in both
+    // backends (design.md section 8).
+    if cli.worker_pool_size < 1 {
+        return Err(
+            "worker-pool-size must be at least 1 (got 0); set --worker-pool-size or WORKER_POOL_SIZE"
+                .into(),
+        );
     }
     let temp_dir = cli
         .temp_dir

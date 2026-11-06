@@ -40,6 +40,9 @@ def write_frame(
 
 
 worker_id = os.environ["YTDLP_WORKER_ID"]
+if worker_id == "slow-start":
+    # Delay hello so both boot and lazy replacement pay the handshake cost.
+    time.sleep(2.0)
 write_frame(
     "hello",
     "startup",
@@ -179,8 +182,75 @@ elif worker_id == "descendant-shutdown":
     write_frame("result", str(shutdown["request_id"]), {"shutdown": True})
     sys.exit(0)
 
-write_frame(
-    "result",
-    request_id,
-    {"exit_code": 0, "stdout": "ok\n", "stderr": ""},
-)
+
+def sleep_arg(args: list[str]) -> float | None:
+    """Read the controllable per-scenario sleep from the request args.
+
+    The slow-request pool scenarios drive the duration with a leading
+    `sleep:<seconds>` argument, so concurrency and saturation tests can pick
+    their timing margins without new fixture scenarios.
+    """
+    for argument in args:
+        if argument.startswith("sleep:"):
+            return float(argument[len("sleep:"):])
+    return None
+
+
+def run_default(request_id: str, args: list[str]) -> None:
+    """Write a default-scenario result with the worker_id in-band.
+
+    The result frame's stdout field is the in-band channel the Rust pool
+    tests read to learn which worker served the request (never plain-text
+    stdout, which is the binary protocol channel). Request args optionally
+    drive a `sleep:<seconds>` delay and a `crash:eof` abort (immediate EOF
+    on the result, the same semantics as the crash-eof worker_id scenario).
+    """
+    for argument in args:
+        if argument == "crash:eof":
+            sys.exit(17)
+    delay = sleep_arg(args)
+    if delay is not None:
+        time.sleep(delay)
+    write_frame(
+        "result",
+        request_id,
+        {
+            "exit_code": 0,
+            "stdout": f"{worker_id}:{':'.join(args)}\n",
+            "stderr": "",
+        },
+    )
+
+
+def next_default_frame() -> dict | None:
+    """Read the next frame while a default-scenario worker is alive.
+
+    Mirrors the real worker's protocol loop: a shutdown frame is answered
+    with its acknowledgement and ends the worker. A fresh worker that never
+    handled a run request therefore receives shutdown as its first request
+    and still shuts down cleanly.
+    """
+    frame = read_frame()
+    if frame is None or frame["message_type"] != "run":
+        if frame is not None and frame["message_type"] == "shutdown":
+            write_frame("result", str(frame["request_id"]), {"shutdown": True})
+        return None
+    return frame
+
+
+def run_args(frame: dict) -> list[str]:
+    return [str(a) for a in frame["payload"]["args"]]
+
+
+if request["message_type"] == "shutdown":
+    # A fresh worker whose first frame is a shutdown (it never handled a run
+    # request) is still answered, mirroring the real worker's protocol loop.
+    write_frame("result", str(request["request_id"]), {"shutdown": True})
+else:
+    # The first request is `request`; its request_id may have been reassigned
+    # by a scenario above (e.g. request-id-mismatch), so it is not re-derived
+    # from the frame. Further run frames keep the warm worker serving serial
+    # requests.
+    run_default(request_id, run_args(request))
+    while (frame := next_default_frame()) is not None:
+        run_default(str(frame["request_id"]), run_args(frame))
