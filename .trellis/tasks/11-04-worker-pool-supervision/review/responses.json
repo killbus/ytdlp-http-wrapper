@@ -1,0 +1,37 @@
+{
+  "round": 2,
+  "scope_summary": "Reviewed only the three code/test files changed by f3d788f..eed9506 for F1 closure and new violations introduced by that fix. Accepted the owner-authenticated D1 topology and D2 bounded-deadline scope in owner-decisions.md. The patch preserves the absolute deadline across lease acquisition and lazy replacement, rejects an exhausted budget before execution while retaining the healthy replacement, and keeps compatibility relative execution timing separate. It adds no scheduling mechanism, public worker API, HTTP route, retry/fallback, runtime resize, generation rollout or protocol change; frozen specifications and existing test assertions remain unchanged.",
+  "changes": [
+    {
+      "file": "src/resident_worker_pool.rs",
+      "intent": "Adds private ExecutionBudget::Deadline/RelativeTimeout variants; bounded dispatch carries Instant into run_leased instead of fixing a relative duration before replacement. Computes the remainder after replacement, returns saturated with the healthy worker on exhaustion, otherwise uses existing execute_with_timeout. Relative mode forwards the existing optional duration unchanged; settlement and lease release remain shared.",
+      "spec_clause": "design.md sections 2, 4, 5, 6 and 8; owner-decisions.md D2"
+    },
+    {
+      "file": "tests/fixtures/resident_worker_runtime.py",
+      "intent": "Adds a slow-start fixture identity that delays the hello frame by 2 seconds, exercising real boot/replacement handshake time without modifying production worker code or framing.",
+      "spec_clause": "design.md sections 6, 9 and 10"
+    },
+    {
+      "file": "tests/resident_worker_pool.rs",
+      "intent": "Adds partial-budget replacement expiry plus a generous-budget control, complete-budget exhaustion with no crash-payload execution and healthy reuse, and a relative-timeout compatibility control. No prior test expectation is changed.",
+      "spec_clause": "design.md sections 4, 5, 6, 7, 8 and 10; owner-decisions.md D2"
+    }
+  ],
+  "test_notes": "Reviewer ran cargo fmt --check, cargo clippy --all-targets -- -D warnings, full cargo test with truncated terminal output, and python -m unittest tests.test_ytdlp_worker -v; all exited 0. Cargo harness reported 56 passed and 6 intentionally ignored subprocess fixtures; Python reported 14 passed. A separate cargo test --test resident_worker_pool replacement -- --nocapture run passed all 3 new tests with no skip messages. These verify replacement budget behavior, non-retirement/reuse on pre-execution expiry and relative-mode preservation, not architecture compliance by test counts. Validation is on Windows only. Pre-fix red runs were not repeated or certified; the relative-mode test is a preservation control and the pre-fix code already passed that duration through unchanged.",
+  "finding_responses": [
+    {
+      "id": "F1",
+      "status": "closed",
+      "response": "Verified directly in source that the original absolute Instant survives lease acquisition and replacement; only the final remaining duration reaches execute_with_timeout. Zero budget produces saturation without sending run or retiring the healthy replacement. The unbounded-wait entry still uses the unchanged relative Option<Duration>.",
+      "evidence": [
+        "src/resident_worker_pool.rs:303 retains the deadline for lease wait; :313 passes ExecutionBudget::Deadline onward.",
+        "src/resident_worker_pool.rs:430 awaits replacement before :466 computes the remaining budget; :475 invokes the bounded worker API without another intervening await.",
+        "src/resident_worker_pool.rs:468 returns Some(worker) on expiry; :509-512 restore it if healthy, followed by dispatch settlement/release at :316-318.",
+        "src/resident_worker_pool.rs:335 and :341 preserve unbounded lease waiting plus RelativeTimeout, selected verbatim at :472.",
+        "tests/resident_worker_pool.rs:533, :608 and :661 passed both the full suite and focused --nocapture rerun."
+      ],
+      "spec_clause": "design.md sections 5 and 6; owner-decisions.md D2"
+    }
+  ]
+}

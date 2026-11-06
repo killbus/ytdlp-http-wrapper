@@ -1,0 +1,154 @@
+{
+  "round": 2,
+  "verdict": "PASS",
+  "base_commit": "f3d788f313a026adc987e8e60f9910868ac4e9dc",
+  "reviewed_commit": "eed950650185dba7f84162048ce03fe8aae47cf7",
+  "original_task_base_commit": "c08f398",
+  "scope": "Convergence review of f3d788f..eed9506 only: verify F1 closure and check the fix plus three added tests for new architecture violations. No other round-1 issue is reopened. owner-decisions.md is an owner decision record, not implementation code under review.",
+  "prechecks": {
+    "design_and_approval": "Both files exist; approval.md:5 still records design_sha256 67E7FC7E0B17BAEBE8DA8580AFFF39CA7354E5A10BBBC51F975B9CF46BEF61F4.",
+    "blocked_record": "No review/blocked.md exists.",
+    "frozen_files": "git diff --name-status f3d788f..eed9506 contains exactly src/resident_worker_pool.rs, tests/resident_worker_pool.rs, tests/fixtures/resident_worker_runtime.py and the added task owner-decisions.md. design.md, prd.md, approval.md and .trellis/spec/ are untouched by this commit.",
+    "spec_gap": "No spec-gap.md exists in the task or its review directory; repository Trellis search also found no spec-gap.md.",
+    "owner_record": "owner-decisions.md is the only task-directory addition. Its lines 3-6 identify it as recorded by the owner; the owner's round-2 message explicitly authenticates it as D1/D2. The committed record matches disk. The commit author/committer is killbus <killbus@users.noreply.github.com>; authorship attribution relies on the owner's explicit instruction as well as the record, not merely that Git identity.",
+    "range": "HEAD is eed950650185dba7f84162048ce03fe8aae47cf7 and its parent is f3d788f313a026adc987e8e60f9910868ac4e9dc. Reviewed source/test working files match HEAD."
+  },
+  "precheck3": {
+    "literal_hit": false,
+    "prior_round_owner_ruling": "The round-1 addition of the locked task documents was already adjudicated a false positive; the owner verified the committed design hash against approval.md and committed PRD against disk. That cleared admission issue is not reopened."
+  },
+  "owner_rulings": [
+    {
+      "id": "D1",
+      "locator": ".trellis/tasks/11-04-worker-pool-supervision/owner-decisions.md:25",
+      "application": "Accept backend -> manager facade -> pool -> resident_worker as the final topology. The manager payload and manager.pool() dispatch access are not findings in this round."
+    },
+    {
+      "id": "D2",
+      "locator": ".trellis/tasks/11-04-worker-pool-supervision/owner-decisions.md:46",
+      "application": "Verify the absolute-deadline handoff in bounded dispatch while preserving the compatibility relative-timeout/unbounded mode. No ResidentWorker API or frozen-spec change is required."
+    }
+  ],
+  "system_context": {
+    "entry_points": [
+      {
+        "file": "src/routes.rs",
+        "line": 75,
+        "why": "Production GET/POST /run registration; handlers at lines 63 and 70 call executor::execute. This is the real request path that reaches the corrected replacement handoff."
+      }
+    ],
+    "upstream": [
+      {
+        "file": "src/executor.rs",
+        "line": 119,
+        "why": "After clamping duration at line 79, resident dispatch uses request_started + duration and spawns tracked backend::reside at line 120. The executor remains separated from pool internals and maps WORKER_POOL_SATURATED to HTTP 503 at line 137."
+      },
+      {
+        "file": "src/backend.rs",
+        "line": 183,
+        "why": "The resident adapter obtains the pool via manager.pool() at line 178 and calls pool.dispatch with the same absolute deadline. This access follows final owner ruling D1."
+      },
+      {
+        "file": "src/resident_worker_manager.rs",
+        "line": 92,
+        "why": "The unchanged compatibility execute_with_timeout path calls dispatch_unbounded with Some(duration); execute at line 82 supplies None. These callers must retain relative execution-only timing and are explicitly kept distinct by the fix."
+      }
+    ],
+    "downstream": [
+      {
+        "file": "src/resident_worker_pool.rs",
+        "line": 303,
+        "why": "Bounded dispatch gives acquire_lease the deadline and separately retains the same Instant in ExecutionBudget::Deadline at line 313 for the subsequent worker/replacement step. The budget type is private at line 43."
+      },
+      {
+        "file": "src/resident_worker_pool.rs",
+        "line": 430,
+        "why": "run_leased awaits ResidentWorker::start only when the leased slot is empty. The absolute budget now survives this await; successful replacement state/counters are recorded before budget evaluation."
+      },
+      {
+        "file": "src/resident_worker.rs",
+        "line": 132,
+        "why": "The unchanged lower layer owns child startup and handshake (line 187), including platform containment at lines 147-151. The new fixture delay exercises this real dependency rather than a production test branch."
+      },
+      {
+        "file": "src/resident_worker_pool.rs",
+        "line": 475,
+        "why": "Only after replacement does the pool compute the remainder at line 466 and call the existing bounded worker API. Expiry returns the healthy worker at line 468; settlement puts it back at line 510, preserving pool ownership and lease release through lines 316-318."
+      },
+      {
+        "file": "src/resident_worker.rs",
+        "line": 210,
+        "why": "execute_with_timeout consumes the duration and applies it to run_request at line 263. Per-request TempDir creation/settlement at lines 237/242 and timeout retirement at lines 266-272 remain owned by the unchanged worker layer."
+      }
+    ],
+    "module": "Root Rust wrapper resident worker pool, with the backend/manager compatibility boundary interpreted by owner ruling D1.",
+    "responsibility": "design.md sections 2, 4, 5 and 6 assign the pool exclusive slot ownership, bounded dispatch, replacement and the remaining-budget handoff; ResidentWorker continues to own process/protocol/temp cleanup. The fix changes only private pool budget representation and test stimuli, not the dependency graph, external worker API, scheduling mechanism or lifecycle owner."
+  },
+  "prior_findings": [
+    {
+      "id": "F1",
+      "status": "closed",
+      "severity": "major",
+      "clause": "design.md sections 5 and 6; owner-decisions.md D2",
+      "locator": "src/resident_worker_pool.rs:466",
+      "verification": "Source verification: dispatch passes the original deadline to acquire_lease at line 303 and retains that Instant as ExecutionBudget::Deadline at line 313. run_leased holds it through the worker-lock and replacement-start awaits at lines 428/430, computes deadline.saturating_duration_since(Instant::now()) at line 466, and has no intervening await before worker.execute_with_timeout at line 475. The stale pre-replacement Duration is removed. At zero remaining time, line 468 returns saturated plus Some(worker) without either worker execution call; settle checks worker health and restores the healthy replacement at lines 509-512 before normal lease release. dispatch_unbounded still acquires with None at line 335 and passes its unmodified Option<Duration> as RelativeTimeout at line 341, selected unchanged at line 472. This preserves both Some(duration) and None semantics.",
+      "behavioral_evidence": [
+        {
+          "file": "tests/resident_worker_pool.rs",
+          "line": 533,
+          "test": "pool_replacement_preserves_absolute_execution_deadline",
+          "result": "Passed in the full cargo test run and in an independent focused rerun with --nocapture. A 3-second absolute budget cannot allow both the 2-second handshake and 2-second request to succeed; the test accepts worker timeout or pre-execution saturation on a heavily loaded host. A separate 10-second replacement succeeds and checks counters/health."
+        },
+        {
+          "file": "tests/resident_worker_pool.rs",
+          "line": 608,
+          "test": "pool_replacement_exhausting_deadline_saturates_without_retirement",
+          "result": "Passed in both runs. The 2-second handshake exhausts a 500ms budget; a crash payload must never execute. Assertions require WORKER_POOL_SATURATED, one replacement, only the original retirement, Idle/cleared reason, then successful reuse with unchanged health."
+        },
+        {
+          "file": "tests/resident_worker_pool.rs",
+          "line": 661,
+          "test": "pool_unbounded_replacement_keeps_relative_execution_timeout",
+          "result": "Passed in both runs. A 3-second relative execution timeout still permits a 2-second replacement handshake followed by 2-second execution, and the replacement remains healthy."
+        }
+      ],
+      "limits": "Architecture closure rests on the traced code and normative budget/ownership contract, not test counts. Pre-fix executions were not repeated. The claim that all three tests failed pre-fix is not independently substantiated: the relative-mode test is a compatibility control, and the pre-fix code already forwarded its duration unchanged after replacement. The two bounded-mode cases directly distinguish the stale-budget defect."
+    }
+  ],
+  "blocking_findings": [],
+  "follow_ups": [],
+  "test_assertion_review": "The round-2 test diff adds three tests and changes only the module-level fixture description; no pre-existing assertion is deleted, weakened or rewritten. The fixture adds a 2-second delay before hello only for worker_id slow-start (tests/fixtures/resident_worker_runtime.py:43); production worker code, wire framing and response shapes are untouched. The new assertions lock the normative separation between an absolute bounded dispatch and legacy relative execution duration, plus healthy-worker retention on pre-execution saturation. Both bounded expiry outcomes in the first test are legitimate: execution-time timeout if some budget remains after handshake, or no-execution saturation if startup exhausts it. Its generous-budget control prevents unconditional rejection from satisfying the test. The second test uses crash:eof as a no-dispatch sentinel and then proves reuse, rather than merely asserting an error code. The third preserves existing relative behavior instead of demanding the compatibility API adopt absolute timing. Focused --nocapture output showed all three passing with no Python-unavailable skip messages. The tests supplement source verification; they do not by themselves prove architecture compliance.",
+  "gates": {
+    "environment": "Reviewer-run on Windows, Python 3.14.0, cargo 1.96.0; CARGO_TARGET_DIR=D:/Temp/ytdlp-pool/target-gate. PYTHONDONTWRITEBYTECODE=1 for Python/test runs. Initial direct cargo invocations failed in the RTK wrapper before cargo ran (missing Claude config/HOME); rerun through rtk proxy completed successfully.",
+    "commands": [
+      {
+        "command": "cargo fmt --check",
+        "exit_code": 0,
+        "result": "Passed."
+      },
+      {
+        "command": "cargo clippy --all-targets -- -D warnings",
+        "exit_code": 0,
+        "result": "Passed; no warnings emitted."
+      },
+      {
+        "command": "cargo test",
+        "exit_code": 0,
+        "result": "Passed: harness reports 56 passed, 0 failed, 6 ignored subprocess fixtures. All 9 resident_worker_pool tests passed, including the three new tests. Terminal output was limited to the final 150 lines."
+      },
+      {
+        "command": "python -m unittest tests.test_ytdlp_worker -v",
+        "exit_code": 0,
+        "result": "Passed: 14 tests, OK."
+      },
+      {
+        "command": "cargo test --test resident_worker_pool replacement -- --nocapture",
+        "exit_code": 0,
+        "result": "Additional focused verification passed: 3 passed, 0 failed, 6 filtered out; 10.04 seconds, no skip messages."
+      }
+    ],
+    "limits": "Windows runtime evidence only. Linux-only smoke tests compiled to zero runnable tests on this host; no Linux runtime or pre-fix red-run result is claimed."
+  },
+  "discarded_count": 0,
+  "summary": "F1 is closed: the bounded pool owns the original deadline through lazy replacement, passes only the final remainder to the worker and retains a healthy replacement when no budget remains. The relative compatibility mode is unchanged, the three added tests introduce no new architecture violation, and all requested gates passed in reviewer-run Windows validation. Owner D1 is final; this convergence review does not reopen the prior topology decision or unrelated round-1 follow-ups."
+}
