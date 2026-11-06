@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "11-04-worker-pool-supervision"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",

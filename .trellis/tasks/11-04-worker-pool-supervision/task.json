@@ -1,0 +1,30 @@
+{
+  "id": "worker-pool-supervision",
+  "name": "worker-pool-supervision",
+  "title": "Bounded resident worker pool with backpressure and observable slot health",
+  "description": "Rollout step 2 of the resident-worker parent design: replace the single resident worker with a bounded worker pool (configurable size, default 1), deadline-bounded backpressure, and per-slot retirement/replacement health.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "complex",
+  "package": "wrapper",
+  "priority": "P2",
+  "creator": "killbus",
+  "assignee": "killbus",
+  "createdAt": "2026-11-04",
+  "completedAt": "2026-11-06",
+  "branch": "feature/worker-pool",
+  "base_branch": "feature/resident-worker-runtime-upgrade",
+  "worktree_path": "D:\\Temp\\ytdlp-pool",
+  "commit": "bcea113",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "11-03-resident-worker-runtime-upgrade",
+  "relatedFiles": [
+    "src/resident_worker_pool.rs",
+    "src/resident_worker_manager.rs",
+    "tests/resident_worker_pool.rs"
+  ],
+  "notes": "Design approved (C46FAB1B), implemented in 3 stages, review round-2 PASS; merged into feature/resident-worker-runtime-upgrade at bcea113.",
+  "meta": {}
+}
