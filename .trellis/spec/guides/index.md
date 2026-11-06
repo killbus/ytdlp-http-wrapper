@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [Paseo Multi-Agent Dispatch SOP](./paseo-dispatch-sop.md) | Dispatch playbook for owner-managed Paseo role loops; applies only when Paseo MCP is available (see its section 0 gate) | Before ANY Paseo multi-agent loop in this repo |
 
 ---
 
