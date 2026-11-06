@@ -1,0 +1,49 @@
+{
+  "done": true,
+  "verdict": "PASS",
+  "round": 2,
+  "design_sha256": "FFDAD6C8ADD4D33068446AF5F2F5D22976FE1E63E32C4DD0866E58335233534B",
+  "criteria": {
+    "D1": "met",
+    "D2": "met",
+    "D3": "met",
+    "D4": "met",
+    "D5": "met",
+    "D6": "met",
+    "D7": "met",
+    "D8": "met"
+  },
+  "round1_findings_status": [
+    {
+      "id": "G1",
+      "status": "closed",
+      "verification": "Re-read the revised sections directly. (a) Section 5 source 2 now carries the absent-digest rule: 'If the API response has no usable sha256 for the PBS asset and no plan file is supplied, boot fails RUNTIME_RESOLVE_FAILURE -- an artifact is never installed without a verified sha256.' The old crate's optional-checksum hole is explicitly closed for the API path. (b) Section 6 plan schema now states 'The plan requires sha256 for every artifact (missing -> RUNTIME_CONFIG_INVALID)'. All four sources have an explicit absent-checksum fail-closed rule: binary sums file/line missing -> RUNTIME_INTEGRITY_FAILURE (source 1); PBS API digest absent with no plan file -> RUNTIME_RESOLVE_FAILURE (source 2, new); zero/several wheels -> RUNTIME_RESOLVE_FAILURE (source 3); plan sha256 missing -> RUNTIME_CONFIG_INVALID (section 6, new). No artifact can be installed without a verified sha256 on any path; prd req 6 is verifiably complete."
+    },
+    {
+      "id": "G2",
+      "status": "closed",
+      "verification": "The [ASSUMPTION A6] marker now sits in the section 5 wheel-verification paragraph immediately after '(self-attested integrity of the extracted payload)', with the section 12 A6 entry retained. All six assumptions are marked at their body bite points and each marker appears exactly once: A1 (section 5 source 2), A2 (section 5 source 2), A3 (section 5 download mechanics), A4 (section 5 tar paragraph), A5 (section 7 flag table), A6 (section 5 RECORD paragraph); each matches its section 12 entry."
+    }
+  ],
+  "blocking_findings": [],
+  "new_observations": [
+    {
+      "id": "N1",
+      "criterion": "D4",
+      "blocking": false,
+      "design_locator": "design.md section 5 source 1 vs section 10 RUNTIME_RESOLVE_FAILURE row",
+      "gap": "Section 5 source 1 assigns RUNTIME_INTEGRITY_FAILURE to 'the sums file is absent or the line missing', while the section 10 RUNTIME_RESOLVE_FAILURE row now lists 'sums file or sha256 line missing' - two different codes for the same condition. The row was in view in round 1 (cited in G1's locator) without this conflict being noted, so the phrase was most likely added while closing G1; the row also still does not name the new 'API response without usable sha256' case explicitly. Non-blocking: both codes are fail-closed pre-admission, no offline test reaches the live SUMS path (a plan file bypasses source 1), prd req 6 holds under either reading, and the body spec (section 5) is the detailed rule an implementer follows. One-phrase table fix: align the RESOLVE row with the body, e.g. 'release API / PyPI JSON unreachable or ambiguous (no/many wheels); API response without usable asset sha256 (no plan file)', leaving the sums-file/line-missing case under RUNTIME_INTEGRITY_FAILURE per source 1."
+    }
+  ],
+  "assumptions_for_human_review": [
+    "A1: default PBS release tag 20261026 (CPython 3.13.18); overridable via --runtime-python-release. Marked inline (section 5 source 2, section 7 table). Unchanged by revision.",
+    "A2: without a plan file, the GitHub API per-asset sha256 is the production trust anchor for the PBS tarball; signature verification out of scope; plan file is the documented alternative. Marked inline (section 5 source 2). Unchanged; its fail-closed complement (absent digest -> RUNTIME_RESOLVE_FAILURE) was added by this revision (G1).",
+    "A3: 512 MiB per-artifact cap, 300 s timeout, 3 attempts with 2s/4s backoff, download-class errors only. Marked inline (section 5). Unchanged.",
+    "A4: system tar on all deployment targets (Windows 10+ bsdtar, Linux GNU tar); self-contained tar reader rejected under the zero-new-deps rule. Marked inline (section 5). Unchanged.",
+    "A5: default --runtime-yt-dlp-version 2026.09.23 as a pin (never 'latest'), overridable. Marked inline (section 7 table). Unchanged.",
+    "A6: wheel + RECORD self-verification sufficient (yt-dlp has no hard runtime deps, verified via PyPI JSON); model extends with more wheel entries if a future pinned version gains hard deps. NOW marked inline at the section 5 RECORD bite point (G2 closed); section 12 entry retained.",
+    "Carried from round 1, still open (unchanged by revision): section 10 RUNTIME_DOWNLOAD_FAILURE row defines the code only for 'curl non-zero / timeout / oversize', but section 11 test failed_download_fails_before_admission_and_recovers asserts a missing file:// plan URL -> RUNTIME_DOWNLOAD_FAILURE; one-word table extension still pending. Non-blocking.",
+    "Carried from round 1, no change required: section 6 worker script via build-time include_bytes! (self-containment, consistent with prd req 2/3); section 5/6 plan-file precedence 'in BOTH tests and production' (owner-awareness: production pinning is operator-driven); runtime-id idhash truncated to 8 hex for the directory name only (full sha256s remain the verification anchor; name collision degrades to fail-closed RUNTIME_INTEGRITY_FAILURE); section 11 'plan URL fetch hook' is a test-seam detail the implementer may define."
+  ],
+  "escalation_reason": ""
+}
