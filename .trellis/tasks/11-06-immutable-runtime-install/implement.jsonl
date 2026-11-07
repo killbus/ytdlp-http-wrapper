@@ -1,0 +1,7 @@
+{"file":".trellis/spec/wrapper/backend/index.md","reason":"Installer module boundaries and validation rules"}
+{"file":".trellis/spec/wrapper/backend/process-lifecycle.md","reason":"Stop and await owned writers before cleanup; frozen request lifecycle"}
+{"file":".trellis/spec/wrapper/backend/dependency-sources.md","reason":"Preserve dependency/lockfile provenance"}
+{"file":".trellis/tasks/11-06-immutable-runtime-install/design.md","reason":"Locked single-runtime design"}
+{"file":".trellis/tasks/11-06-immutable-runtime-install/prd.md","reason":"Single-runtime scope and AC1-AC6"}
+{"file":".trellis/tasks/11-06-immutable-runtime-install/approval.md","reason":"Verified design lock and A8/A9 approval"}
+{"file":".trellis/tasks/11-06-immutable-runtime-install/review/owner-decisions.md","reason":"S1-S5 and temporary model override"}

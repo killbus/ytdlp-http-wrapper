@@ -1,0 +1,18 @@
+{
+  "round": 1,
+  "scope_summary": "Stage 2 code/test work completed to a coherent Windows-validated checkpoint under the locked single-runtime design. Only src/runtime_installer.rs, tests/runtime_install.rs and permitted reports changed. Full identity/repair, preparation preservation, publication/cleanup/restart and source/error/retry matrices are implemented; native Linux validation remains outstanding. Stage 3, independent acceptance review and owner delivery history remain deferred. No public test API, version store/history/backup/fallback, cross-boot sweep, deployment or commit.",
+  "changes": [
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Preserve Stage 1 lifecycle; route embedded worker through private production install logic; correct missing-tar and binary-SUMS-404 errors; retain transfer status and sanitized context; check metadata size, usable URLs, unique release/PBS selection and version/platform-bound plan names. Add module-local cfg(test) identity, filesystem/command faults, real child fixture and resolver/retry assertions; hide Windows helper windows. Defaults/channels/dependencies unchanged.",
+      "spec_clause": "design.md sections 4, 5, 6, 8, 10, 11"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Complete independent identity/manifest/content repair matrices, exact post-damage snapshots across source/hash/tar/wheel preparation failures, initial failure/recovery, restart-state and foreign-staging preservation, native Windows publication locks, no-fetch endpoint-independent reuse, full identity/byte and no-history assertions. Correct AC1 graph commentary and add --locked while retaining graph/manifest/lockfile assertions.",
+      "spec_clause": "design.md sections 4, 8, 10, 11"
+    }
+  ],
+  "test_notes": "Native Windows only. Final rustfmt --edition 2021 src/runtime_installer.rs tests/runtime_install.rs and cargo fmt --check: exit 0. Final cargo test --locked --lib runtime_installer::tests: exit 0, 24 passed (includes subprocess fixture entrypoint), 6 filtered, 7.20s. Final cargo test --locked --test runtime_install: exit 0, 15 passed, 14.45s. Earlier passing checkpoints: 11/19/23 module tests and 15 integration tests; initial compile errors in test-helper visibility and Value comparison were corrected. Real Windows sharing locks and a real direct child fixture exercised; remaining injected branches are private cfg(test), not production seams. All sources isolated/offline, no live upstream. Direct-child completion is not process-tree evidence. Unix sync/permission/link cases exist but were not executed; privileged chmod bypass cannot establish denial evidence. All 35 frozen/preserved hashes unchanged; locked design hash unchanged. git diff --check exit 2 only for unchanged pre-existing frozen-file whitespace. Source SHA256: installer 8DB4CAFD6649FF81D45E7EFDB0B2B3974B5D8C901BE6892C530E1755C69139D2; integration tests F9134DB10EDD62185A0AD5E66695EA1C35745D0B536BA000416121FEF255200B. Exact section-11 mapping and limitations appended to review/implement-progress.md. Native Linux Stage 2 evidence, Stage 3 boot/docs and full locked Clippy/Rust/Python gates, CI/release/container evidence, independent review, A1-A6 rollout confirmation and the single owner delivery commit remain pending. No acceptance verdict.",
+  "finding_responses": []
+}

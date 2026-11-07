@@ -1,0 +1,59 @@
+{
+  "done": true,
+  "verdict": "PASS",
+  "round": 4,
+  "design_sha256": "3B524845DAC0A49CA0030C325281BB26C06327B95BDC690E3F2541C890E848BC",
+  "base_commit": "c08f398",
+  "reviewer": "design-reviewer",
+  "reviewed_at": "2026-11-07",
+  "criteria": {
+    "D1": "met",
+    "D2": "met",
+    "D3": "met",
+    "D4": "met",
+    "D5": "met",
+    "D6": "met",
+    "D7": "met",
+    "D8": "met"
+  },
+  "summary": "Round-4 closure review directly verified the revised clauses for G1-G5; all five findings are closed, with no blocking violation introduced by their fixes. Unaffected criteria retain their round-3 assessment; this was not a new full review. The computed candidate hash matches the round-4 brief. c08f398 remains the review baseline, distinct from the parent baseline 7611b95 named in design.md. No open-questions.md is present. The historical approval.md hash is deliberately not the candidate hash and is not a blocker for this pre-lock review. PASS establishes document-level closure only: it is not implementation acceptance, owner confirmation of A7, or permission to proceed under a revised lock. No Cargo command, build, test suite, delivery-history acceptance procedure, commit, or subordinate agent was run.",
+  "previous_findings_status": [
+    {
+      "id": "G1",
+      "status": "closed",
+      "verification": "Directly read design.md section 4, line 129; section 8, lines 387-424; and section 12, lines 585-591, against prd.md requirement 3, lines 27-33, parent design section 6, lines 194-206, and process-lifecycle.md line 8. The marker is expressly insufficient deletion authority. Cross-boot sweeping is removed. Removal requires current-invocation provenance, containment beneath the canonical staging root without a symlink/reparse-point target, an abandoned attempt, stopped and awaited writers/children, the marker, and a schema-v1 manifest matching the resolved plan/build. Partial or invalid staging and uncertain quiescence are retained with diagnostics; removal failures are structured and logged. Both installation-failure and publication-race paths refer to this same rule. Another invocation's directory is never declared stale or removed. This preserves the inherited owned, manifest-validated boundary rather than weakening it. A7 explicitly records the narrower reclamation policy and remains pending owner confirmation."
+    },
+    {
+      "id": "G2",
+      "status": "closed",
+      "verification": "Directly read design.md section 11, lines 511-529, against section 8 step 4, lines 375-382, and prd.md AC3, lines 68-70. Separate cases now corrupt the retained Python archive and mismatch manifest.runtime_id after valid installations. The source bytes, original plan and hashes, flags, and embedded worker build remain unchanged. Each retry must identify the original derived id, return RUNTIME_INTEGRITY_FAILURE without paths, leave the fetch count at three, and create no staging directory. Snapshots taken after corruption but before retry must match post-rejection paths, entry types, bytes, permissions, and modification times; no repair, deletion, or new version is allowed. These are feasible fixture/test-harness observations and test-only filesystem comparisons; the clauses do not require production test-only hooks, reverse dependencies, or reuse-time hashing of the extracted Python tree."
+    },
+    {
+      "id": "G3",
+      "status": "closed",
+      "verification": "Directly read design.md section 5, lines 222-285; section 6, lines 330-338; section 7, line 358; section 8, lines 426-429; and section 10, lines 470-486. Missing curl and missing tar consistently use non-retryable RUNTIME_CURL_MISSING with the tool identified; a nonzero tar exit uses RUNTIME_EXTRACT_FAILURE. Worker-version mismatch exclusively uses RUNTIME_VERSION_MISMATCH and is excluded from RUNTIME_CONFIG_INVALID. Missing/unusable binary digests after API/SUMS exhaustion, PBS API digests, and selected-wheel digests use RUNTIME_RESOLVE_FAILURE; absent/unusable plan hashes use RUNTIME_CONFIG_INVALID; byte disagreement with a usable expected digest uses RUNTIME_INTEGRITY_FAILURE. SUMS HTTP 404 is explicitly non-retryable checksum exhaustion. Other metadata/artifact transfer failures and file-copy failures use RUNTIME_DOWNLOAD_FAILURE, while unusable or ambiguous retrieved metadata uses RUNTIME_RESOLVE_FAILURE. Only RUNTIME_DOWNLOAD_FAILURE receives the three-attempt, 2s/4s retry policy. The body and table now agree without an overlapping missing-checksum or missing-tool outcome."
+    },
+    {
+      "id": "G4",
+      "status": "closed",
+      "verification": "Directly read design.md section 11, lines 513 and 531-560, against prd.md requirement 1 and AC1. The documented offline procedure requires an owner-recorded delivery commit C after implementation review and gates, followed by reviewer inspection before final acceptance/push. It specifies an ancestry check from c08f398, enumeration and patch inspection of relevant intervening commits including merge parents, and inspection of C's parent-to-result transition and file contents. Assertions bind installer introduction and wiring, sole boot replacement, LibraryInstaller/import/helper removal, Cargo.toml dependency/patch removal, and matching Cargo.lock changes to that single transition. The parent must retain the old path; earlier partial deliveries invalidate acceptance even if the final tree passes metadata checks. This supplies the missing mechanical history check. The procedure was reviewed as text, not executed, and no future delivery commit is claimed to have passed it."
+    },
+    {
+      "id": "G5",
+      "status": "closed",
+      "verification": "Directly read design.md section 5, lines 286-297; section 12, lines 571-591; and section 0, lines 14-17. Exactly one inline [ASSUMPTION A6] now marks the pinned-wheel/ZIP closure claim at line 295 and matches the A6 definition. The prohibition on hand-written RECORD parsing remains intact. A textual marker count found exactly one inline occurrence for each of A1-A7; A1-A6 remain defined, and the new A7 has both an inline marker and an explicit pending-confirmation entry."
+    }
+  ],
+  "blocking_findings": [],
+  "assumptions_for_human_review": [
+    "A1: Default PBS release tag 20261026 and CPython 3.13.18. Inline: design.md section 5, line 239; definition: section 12, line 571. Inline count: 1. Existing assumption; this review does not confirm the default on the owner's behalf.",
+    "A2: GitHub API per-asset SHA256 is the production PBS trust anchor without an operator plan; signature verification remains out of scope. Inline: design.md section 5, lines 253-255; definition: section 12, lines 572-574. Inline count: 1. Existing assumption; no new approval inferred.",
+    "A3: 512 MiB per-artifact cap, 300-second attempt timeout, and three attempts with 2s/4s backoff for download-class errors. Inline: design.md section 5, line 278; definition: section 12, lines 575-576. Inline count: 1. Sections 8 and 10 identify that retry class exclusively as RUNTIME_DOWNLOAD_FAILURE.",
+    "A4: System tar is available on Windows and Linux deployment targets. Inline: design.md section 5, line 285; definition: section 12, lines 577-578. Inline count: 1. Missing-tool failure is now explicitly non-retryable and identifies tar in the detail.",
+    "A5: The default yt-dlp version is the explicit, overridable pin 2026.09.23, never latest. Inline: design.md section 7, line 352; definition: section 12, lines 579-580. Inline count: 1. Existing assumption; this review does not approve a production default.",
+    "A6: A pinned wheel plus ZIP extraction supplies the Python package closure; a future pin with hard runtime dependencies requires additional pinned wheels. Inline: design.md section 5, lines 295-297; definition: section 12, lines 581-584. Inline count: 1. Closure of G5 confirms traceability, not the runtime sufficiency of an untested future pin.",
+    "A7: Proposed conservative staging cleanup, pending owner confirmation. Inline: design.md section 8, lines 406-424; definition: section 12, lines 585-591. Inline count: 1. Automatic removal is limited to this invocation's owned, manifest-validated staging after abandonment and confirmed writer/child quiescence. No cross-boot or cross-invocation sweep occurs; partial/unvalidated staging and uncertain ownership/liveness are retained. This preserves the PRD/parent safety boundary but leaves crash residue and failed pre-manifest attempts on disk, potentially accumulating across retries and boots. The tradeoff is explicit and internally consistent; PASS does not approve A7. Owner confirmation and a revised lock remain separate steps.",
+    "No additional unmarked or untraceable decision was found within the G1-G5 fixes. This closure pass does not reopen unrelated design decisions."
+  ],
+  "escalation_reason": ""
+}

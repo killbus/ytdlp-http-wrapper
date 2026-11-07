@@ -1,0 +1,18 @@
+{
+  "round": 1,
+  "scope_summary": "Stage 1 checkpoint completed for locked single-runtime design DD08291438B125AC99056823DE96D077435B1CCA0D20973D654459EFCBEAAD59. Only the installer, installer integration tests and permitted reports changed. Fixed runtime reuse/replacement and invocation-owned cleanup implemented; no versions store, history/backup/fallback, cross-boot sweep, lock service, public testing seam, deployment or commit. Stage 2 full acceptance/failure fidelity and Stage 3 boot/docs/final gates remain explicitly deferred; no acceptance verdict is claimed.",
+  "changes": [
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Replace version-addressed publication and marker sweeps with fixed runtime/full-identity reuse, verified preparation, invalidate/remove/rename-to-absent publication and post-publication validation. Track current-invocation staging ownership, recheck containment, await children, preserve uncertain work, surface cleanup errors with primary cause, disarm after rename, and retry only download errors after successful cleanup. Remove public fetch-counter hook; retain sha2/zip/resolver code.",
+      "spec_clause": "design.md sections 0, 4, 8, 10"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Offline basic regressions for fixed layout, unchanged reuse with unavailable sources, same-path replacement removing old-only sentinel, corruption/missing-file repair, failed preparation preserving exact old snapshots, and manifest-free cleanup preserving foreign staging. Module-local ownership tests are in the installer. Full identity and publication-failure matrices remain Stage 2.",
+      "spec_clause": "design.md section 11"
+    }
+  ],
+  "test_notes": "Windows only. rustfmt --edition 2021 src/runtime_installer.rs tests/runtime_install.rs and cargo fmt --check: exit 0, including after final edits. Final cargo test --locked --test runtime_install: exit 0, 11 tests (7.02s); final cargo test --locked --lib runtime_installer::tests: exit 0, 3 tests, 6 unrelated tests filtered (0.01s). Earlier focused runs: exit 0, 10 integration and 3 module tests. Unix-only link cleanup test not executed. All fixture installs isolated, no live source or real libs root. 35 frozen/preserved hashes unchanged. git diff --check exit 2 only for unchanged pre-existing whitespace in frozen 11-03 task.json:22/23 and review/design-findings.json:34; global git-ignore warning also observed. Detailed evidence and deferred Stage 2/3 scope are appended to implement-progress.md. No new full-suite/Clippy/Python/Linux/CI/release/container or delivery-commit evidence. Existing AC1 graph assertion runs with local cache; its inherited commentary correction remains Stage 2 and no historical graph/commit claim is repeated.",
+  "finding_responses": []
+}

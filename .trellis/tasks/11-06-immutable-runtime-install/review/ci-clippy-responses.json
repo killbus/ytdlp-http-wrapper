@@ -1,0 +1,19 @@
+{
+  "round": 1,
+  "scope_summary": "One-site mechanical CI Clippy repair on local HEAD 2de629b9a91060ca626267b6f6fde732e82b2365, confirmed with git rev-parse HEAD; unrelated worktree changes preserved. No branch synchronization, staging, commit, or push.",
+  "changes": [
+    {
+      "file": "tests/resident_worker.rs",
+      "intent": "Replace shutdown().await.err().expect(...) with shutdown().await.expect_err(...) using the identical message; preserve the error-code assertion, descendant heartbeat assertions, and all fixtures and production code.",
+      "spec_clause": "CI strict Clippy gate; no behavioral change"
+    }
+  ],
+  "test_notes": "cargo fmt --check: exit 0. git diff --check -- tests/resident_worker.rs: exit 0. git diff -- tests/resident_worker.rs: exit 0; inspected the sole hunk with two deleted lines and one added line. git rev-parse HEAD: exit 0; unchanged local HEAD 2de629b9a91060ca626267b6f6fde732e82b2365. No local builds, Clippy, or tests were run. Hosted Linux Clippy and Linux-only descendant lifecycle validation remain pending, as do hosted CI test/build gates; Windows formatting is not Linux runtime evidence.",
+  "finding_responses": [
+    {
+      "id": "CI-CLIPPY-ERR-EXPECT",
+      "response": "ACCEPTED",
+      "action_or_evidence": "tests/resident_worker.rs:393 now uses .expect_err(\"shutdown with a surviving descendant should fail\"). Confirmed src/resident_worker.rs:463 declares pub async fn shutdown(mut self) -> Result<(), ResidentWorkerError>; the Ok type () implements Debug, satisfying expect_err's bound. The existing WORKER_SHUTDOWN_FAILURE assertion and all other test logic are unchanged; no allow attributes were added. Hosted Ubuntu verification of the repair for run 42367068130 is still pending."
+    }
+  ]
+}

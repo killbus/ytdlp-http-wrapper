@@ -16,5 +16,5 @@ pub struct RunResponse {
 #[derive(Serialize)]
 pub struct ErrorResponse {
     pub error: String,
-    pub code: &'static str,
+    pub code: String,
 }

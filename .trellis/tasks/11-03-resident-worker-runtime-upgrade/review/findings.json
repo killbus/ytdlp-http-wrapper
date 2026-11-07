@@ -1,0 +1,71 @@
+{
+  "round": 2,
+  "base_commit": "c08f398",
+  "review_commit": "ef7e6ef",
+  "verdict": "PASS",
+  "owner_decision_reference": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/review/owner-decisions.md (frozen; F1 = option (a) wire cancellation, F2 = option (2) approved divergence + design section 9 comparison tests)",
+  "findings": [
+    {
+      "id": 1,
+      "severity": "major",
+      "status": "closed",
+      "owner_decision": "option (a) - wire cancellation reusing the existing cancel-frame / bounded-grace / terminate_preserving retirement machinery",
+      "verification": {
+        "wiring": [
+          "src/backend.rs:219-253 dispatch_with_cancellation: tokio::select! over reply.closed() and state.shutdown.cancelled() fires a caller-owned CancellationToken; the pinned dispatch future is then awaited to completion (not dropped) so the retirement sequence - cooperative cancel frame, bounded grace, terminate_preserving, tree reaping - runs to completion; the code comment documents why dropping would kill the worker without reclaiming its process tree or request temp directory",
+          "src/backend.rs:134-141: pre-dispatch check is now state.shutdown.is_cancelled() || reply.is_closed(), mirroring src/supervisor.rs:186 - both concrete consequences from the round-1 finding (cancellation unobserved; unreachable pre-dispatch branch) are addressed",
+          "src/resident_worker.rs:286-331 run_request: select! races the caller cancellation against the dispatch; the Cancelled arm routes to retire_cancelled",
+          "src/resident_worker.rs:362-379 retire_cancelled: marks unhealthy, reuses cancel_active_request (cooperative frame + CANCELLATION_GRACE) and terminate_preserving; on clean containment reports the CLI-shaped interrupted response (RunResponse exit_code -1); a containment failure surfaces WORKER_TERMINATION_FAILURE instead of a false success",
+          "src/resident_worker_manager.rs:94-107 execute_with_cancellation: the trigger is passed through the exclusive lease to the leased worker, so a request blocked on execution_gate cannot be cancelled without touching the active worker",
+          "Cargo.toml:19 adds tokio-util 0.7 (rt feature) for the cancellation token; Cargo.lock already contains it as a transitive dep, no new transitive tree"
+        ],
+        "tests": [
+          "tests/resident_backend.rs:199 resident_backend_client_cancellation_retires_the_active_worker: spawns the real executor with a 120s request on the new equest-slow fixture (tests/fixtures/resident_worker_runtime.py, sleeps 120s and does not read frames while executing), waits for manager status Busy, aborts the handler task (closing the reply channel exactly like a client disconnect), then asserts within 20s that the worker is retired (status Empty), that the admission permit is released, and that the owned per-request temp directory is reclaimed",
+          "ran the test twice more in isolation plus once in the full cargo test run: 3/3 passes, no observed flakiness",
+          "the test directly exercises the round-1 acceptance criterion: slow fixture request + dropped client, and proves the cancelled request does NOT run to its deadline (a miss would take >=120s against the 20s assertion window and would leave the worker Busy)"
+        ],
+        "design_5_conformance": "Design section 5 sequence implemented: cooperative cancel frame sent for the active request (request-ID matched), completion cannot be proven for a frame-blind executing worker, so within the bounded grace the whole worker is terminated and replaced for the next request - the known cost (retiring a healthy warm worker) is explicitly accepted in owner-decisions.md and will shrink with the bounded pool (11-04)"
+      }
+    },
+    {
+      "id": 2,
+      "severity": "minor",
+      "status": "closed",
+      "owner_decision": "option (2) - accept the resident divergence as an owner-approved API change and add the design section 9 resident-vs-CLI comparison tests",
+      "verification": {
+        "tests": [
+          "tests/backend_contract.rs (new, 390 lines) with shared fixture tests/fixtures/contract_echo.py (single source of truth for expected bytes, written as explicit b\"\\n\" to keep the comparison exact on Windows) and the tests/fixtures/contract_runtime/yt_dlp stand-in that shells out to the very same script with the very same arguments - so any difference observed comes from the wrapper, not the fixtures",
+          "success_is_an_identical_run_response_on_both_backends: same args through the CLI supervisor (python binary + [script, success]) and the real resident worker; asserts 200 on both and byte-identical bodies {exit_code:0, stdout:\"contract stdout\\n\", stderr:\"contract stderr\\n\"}, worker stays Ready, no owned temp residue on either side",
+          "timeout_diverges_exactly_as_the_owner_approved: same hang fixture args; CLI asserts the documented 200/exit_code:-1 shape (with a ready-marker wait so the deadline does not race process startup, and temp reclamation asserted); resident asserts 500 WORKER_TIMEOUT with a non-empty diagnostic, worker retired to Empty, no residue - exactly the approved divergence, referenced to owner-decisions.md in the test doc comment",
+          "business_error_shapes_diverge_exactly_as_the_owner_approved: unstructured failure (exit 1) is byte-identical on both backends; the resident-only structured channel asserts 500 + verbatim FIXTURE_FAILURE with the worker kept Ready - the lossy CLI shape the owner approved replacing is asserted as the baseline"
+        ],
+        "traceability": "tests/backend_contract.rs header and each divergence test name/comment reference .trellis/tasks/11-03-resident-worker-runtime-upgrade/review/owner-decisions.md, so the approved API change is traceable from code as required by the decision's scope",
+        "no_behavior_change": "the diff adds no source change to the error-mapping path; it only records and tests the existing shapes (verified: src/executor.rs and src/supervisor.rs are untouched by this diff)"
+      }
+    }
+  ],
+  "new_findings": [],
+  "new_issues_examined": [
+    "Cancellation response shape: a cancelled client receives 200/exit_code:-1 (retire_cancelled returns the CLI-shaped interrupted RunResponse) rather than the 503 the round-1 recommendation text sketched - this is the CLI-consistent shape (src/supervisor.rs documents the HTTP timeout/cancel response as 200 exit_code -1) and matches the owner decision's \"consistent with the CLI\" requirement, so it is not a finding",
+    "retire_cancelled only suppresses WORKER_CANCELLED on the success path; a containment failure surfaces WORKER_TERMINATION_FAILURE, so a cancelled request never falsely reports success with a live worker",
+    "dispatch_with_cancellation pins the dispatch future and awaits it after the trigger fires; temp settlement happens inside the awaited future (RequestTemp.settle) before the permit is released, so no cleanup or permit leak on the cancellation path (also asserted by the test's permit + temp-dir claims)",
+    "biased select! ordering (cancel checked first) is correct: if both are ready the request is treated as cancelled, which retires and replaces the worker - safe for correctness",
+    "contract_echo.py hang-mode ready marker is written into the owned request dir via TMPDIR/TMP/TEMP, which both backends export - deterministic cross-backend synchronization",
+    "tokio-util is already present in Cargo.lock transitively; adding it as a direct dependency changes no dependency tree",
+    "no regression surface: the timeout/protocol/EOF retirement paths were refactored from inline code into dispatch() + Dispatched enum but are behavior-identical (same codes, same retire set: protocol failure, output limit, deadline); all round-1 resident_worker/resident_worker_manager tests still pass unchanged"
+  ],
+  "pre_checks": {
+    "scope": "pass - the reviewed diff c08f398..ef7e6ef touches no design.md, prd.md, approval.md, or .trellis/spec/ file; the only .trellis files are the task's own review artifacts (owner-decisions.md, and the round-1 findings.json/responses.json committed alongside)",
+    "design_hash": "not_recomputed - approval.md records design_sha256; the loop verify-check owns hash-match. design.md is absent from the diff, so the frozen yardstick is unchanged",
+    "ticket_scope": "pass - the diff is exactly the two owner-decision scopes (resident cancellation wiring + design section 9 comparison tests); no pool, Phase 4, or Phase 6 work was introduced",
+    "verification_ran": [
+      "cargo fmt --check (clean)",
+      "cargo clippy --all-targets -- -D warnings (clean)",
+      "cargo test (full suite green: unit 6, backend_contract 3, process_lifecycle 10 passed/6 ignored, query 1, resident_backend 6, resident_worker 14, resident_worker_manager 4, run_contract 3, worker_protocol_interop 4, 0 failures)",
+      "python -m unittest tests.test_ytdlp_worker -v (14 passed)",
+      "targeted re-runs of the two new test groups (resident_backend cancellation test x2 isolated runs, backend_contract x1 isolated run) - all green"
+    ]
+  },
+  "scope_summary": "Round 2 reviews git diff c08f398..ef7e6ef (single commit ef7e6ef, 11 files, +958/-31): resident client-cancellation wiring per owner decision (a) and the resident-vs-CLI contract comparison tests per owner decision (2). Source changes are confined to src/backend.rs (dispatch_with_cancellation select + pre-dispatch reply.is_closed() check), src/resident_worker.rs (cancellation token through execute paths, Dispatched race, retire_cancelled), and src/resident_worker_manager.rs (execute_with_cancellation); everything else is tests (tests/backend_contract.rs, tests/resident_backend.rs, new fixtures contract_echo.py and contract_runtime/yt_dlp) plus the task's own review artifacts. Verdict: PASS - both round-1 findings closed with the owner-approved shapes and real deterministic test evidence; no new blocking findings.",
+  "finding_responses": []
+}

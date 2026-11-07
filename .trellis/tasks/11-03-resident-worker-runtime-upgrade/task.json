@@ -1,0 +1,28 @@
+{
+  "id": "resident-worker-runtime-upgrade",
+  "name": "resident-worker-runtime-upgrade",
+  "title": "Resident yt-dlp worker and runtime generation upgrade",
+  "description": "Design and implement resident yt-dlp workers, project-owned runtime management, and generation-based zero-downtime upgrades.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": "complex",
+  "package": "wrapper",
+  "priority": "P2",
+  "creator": "killbus",
+  "assignee": "killbus",
+  "createdAt": "2026-11-03",
+  "completedAt": null,
+  "branch": "feature/resident-worker-runtime-upgrade",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "11-04-worker-pool-supervision"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
