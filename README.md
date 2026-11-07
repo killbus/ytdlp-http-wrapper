@@ -49,9 +49,11 @@ All options accept CLI flags (local dev) or environment variables (Docker). CLI 
 | `--host` | — | `HOST` | `127.0.0.1` | Bind address |
 | `--port` | `-p` | `PORT` | `8080` | Listen port |
 | `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | Private installation root containing `runtime/` and `staging/` |
-| `--runtime-yt-dlp-version` | — | `RUNTIME_YTDLP_VERSION` | `2026.09.23` | Exact version for both the standalone binary and Python wheel; never `latest` |
-| `--runtime-python-release` | — | `RUNTIME_PYTHON_RELEASE` | `20261026` | python-build-standalone release tag; Python version resolved from the selected archive |
-| `--runtime-plan` | — | `RUNTIME_PLAN` | unset | JSON source plan with explicit artifact URLs and SHA256s; overrides live resolution |
+| `--runtime-yt-dlp-version` | — | `RUNTIME_YTDLP_VERSION` | `2026.10.26` | Exact version for both the standalone binary and Python wheel; never `latest` |
+| `--runtime-python` | - | `RUNTIME_PYTHON` | unset | uv request; reuse validated interpreter on updates |
+| `--runtime-uv` | - | `RUNTIME_UV` | `uv` | Deployment-provided executable |
+| `--runtime-python-release` | - | `RUNTIME_PYTHON_RELEASE` | unset | Removed PBS input; boot rejects with migration guidance |
+| `--runtime-plan` | - | `RUNTIME_PLAN` | unset | Schema-2 pinned binary/optional wheel source plan |
 | `--backend` | — | `BACKEND` | `cli` | `cli` or `resident`; no automatic fallback |
 | `--worker-python` | — | `WORKER_PYTHON` | installed runtime interpreter | Explicit interpreter override for resident only |
 | `--worker-path` | — | `WORKER_PATH` | installed runtime worker copy | Explicit script override for resident only |
@@ -77,73 +79,110 @@ Both backends use the same completed installation, but consume distinct artifact
 
 - CLI executes the official standalone yt-dlp binary from `runtime/bin/` per
   request. It does **not** launch `python -m yt_dlp`.
-- Resident runs the installed Python interpreter and imports the pinned `yt_dlp`
-  wheel from `runtime/python/site-packages/`. The worker script is embedded from
-  `worker/ytdlp_worker.py` when the wrapper is built, then copied into the runtime;
-  it is not downloaded from upstream.
+- Resident runs an isolated CPython subprocess from a uv-created virtual
+  environment. The worker protocol, process containment and pool are unchanged.
+  The embedded worker script is copied into each prepared runtime.
 
 ```text
-LIBS_DIR/                         # default: libs/
+LIBS_DIR/                         # private to one instance, location-bound
   runtime/                        # the only installed runtime
-    manifest.json
-    artifacts/                    # retained binary, Python tarball and wheel
+    manifest.json                 # schema 2: request plus observed identities
+    artifacts/                    # verified binary, optional pinned plan wheel
     bin/yt-dlp.exe                # Windows; bin/yt-dlp on Unix
-    python/python.exe             # Windows; python/bin/python3 on Unix
-    python/site-packages/yt_dlp/
+    python/Scripts/python.exe     # Windows; python/bin/python on Unix
+    python/                       # relocatable venv and uv-installed packages
     worker/ytdlp_worker.py
-  staging/<unique-attempt>/        # preparation only, never selectable
+  uv-python/                      # stable managed base interpreters; never moved
+  uv-cache/                       # private uv cache, not the user's global cache
+  staging/<unique-attempt>/       # preparation only, never selectable
 ```
 
-Installation completes before backend startup and listener binding, including
-when explicit resident interpreter/script overrides are supplied. Overrides win
-over the installed interpreter/script paths, but do not bypass runtime validation.
-The runtime package path stays first; `--worker-python-path` adds entries after it
-(unset or empty adds none). The worker handshake must report the runtime yt-dlp
-pin: an equal explicit `--worker-yt-dlp-version` is accepted; a different one
-rejects boot without retry, before backend startup, in either backend mode. Set
-`--runtime-yt-dlp-version` too when retaining an older explicit worker pin.
+Installation completes before backend startup/listener binding. Explicit resident
+interpreter/script overrides still win but never bypass installation validation.
+Installed venv package paths come first; `--worker-python-path` appends extra paths.
+Worker version must equal the explicit runtime pin. No per-request uv calls,
+automatic latest, or periodic self-update are introduced.
 
-Reuse requires the **full identity**, not just matching a version string or the
-abbreviated `runtime_id`: platform, yt-dlp and Python versions/release, artifact
-names/channels/resolved tags/SHA256s, and the embedded worker hash must match.
-Boot verifies retained artifacts, the installed standalone binary and worker copy,
-and the presence/containment of required Python/package paths. It does not rehash
-the whole extracted Python tree or promise detection of every extracted-file edit.
-Matching valid content is reused without artifact downloads or staging creation.
-Runtime identity (also called `generation_id` in the worker handshake) is metadata,
-not a version store, selector, or generation manager.
+### Python Ownership And Reuse
 
-Missing, mismatched or corrupt content triggers preparation of a verified
-replacement. There is no history, backup, rollback, or old-version fallback.
-Changing the embedded worker in a new wrapper build also changes runtime identity.
+Deployment supplies uv (Docker pins official `ghcr.io/astral-sh/uv:0.11.29`);
+Rust does not update it or enumerate Python releases. First install runs
+`uv venv --no-project --relocatable --managed-python --python cpython`, letting
+uv discover/download managed CPython. `--runtime-python` passes an explicit uv
+request instead (version/specifier or external interpreter path). External
+interpreters must remain available at their original location for the runtime's
+lifetime. There is no compiled default Python minor series.
+
+Next, `uv pip install --python <venv-python> --no-build --link-mode copy
+"yt-dlp==<explicit-version>"` resolves the package and mandatory dependencies,
+followed by `uv pip check`. No optional extras or source-build backends are enabled.
+uv enforces Requires-Python, Requires-Dist and wheel compatibility against the
+**already chosen interpreter**; it does not search all Python versions to satisfy
+every dependency. Incompatibility rejects boot with uv's diagnostic: correct the
+pin or `--runtime-python`, then restart. There is no automatic version fallback.
+A read-only Python probe imports yt-dlp and loads the worker to check compatibility.
+
+Updates prefer the previous validated base interpreter when the Python request
+has not changed, rather than upgrading Python because yt-dlp changed. Base paths
+are outside replaceable staging/runtime. `--relocatable` alone is **not** a portable
+base-interpreter promise. Boot probes both staging and the published environment,
+checks the venv prefix/import location and rejects bases in replaceable storage.
+Do not move the whole private root while retaining its venv.
+
+Identity records the dependency request, actual Python version/base path/executable
+hash, distribution names/versions, binary pins and embedded worker hash. It is not
+a universal package/interpreter lock. Valid reuse checks local artifacts and the
+recorded environment without network metadata, uv resolution, or staging creation;
+uv can even be absent. This does not rehash every Python library/package file or
+lock transitive versions for a fresh rebuild. Missing/corrupt environments are
+prepared again before use. There is no history store or old-version fallback.
 
 ### Sources And Prerequisites
 
-The standalone binary comes from the exact yt-dlp GitHub release, Python from
-astral-sh/python-build-standalone, and the wheel from PyPI. Without a plan, boot
-resolves pinned release metadata even when checking an existing installation.
-A source plan is recommended for production pinning and offline reuse: it takes
-precedence over live endpoints, requires schema version 1, matching yt-dlp and
-Python release versions, and one platform-correct binary, Python tarball and wheel,
-each with a URL and 64-hex SHA256. URLs may use `https://` or local `file://`; URL
-changes alone do not change identity if the pinned content is unchanged. See the
-[source-plan schema](.trellis/tasks/11-06-immutable-runtime-install/design.md#6-runtime-source-plan-test-seam--production-pinning).
+Native installations need uv 0.11.29 (the deployment pin; other versions require
+validation) and system curl. `--runtime-uv` / `RUNTIME_UV` overrides the executable;
+use an absolute path when not on PATH. Binary acquisition/SHA-256 remains unchanged:
+exact GitHub release metadata, API digest or SHA2-256SUMS, retained verified bytes.
+uv owns Python/package downloads and installation, not Rust PBS URL/digest tables.
+Boot ignores ambient `UV_*` configuration and project/uv.toml files, uses private
+uv directories, and leaves standard proxy/TLS handling to the tools. curl artifact
+limits remain 512 MiB and 300 seconds; these are not claimed as uv limits. Only Rust
+artifact download failures retry (three attempts, cleanup first). uv failures reject
+boot directly. Neither the base-interpreter store nor global caches are deleted.
 
-System `curl` handles HTTPS transfers using its inherited proxy environment and
-CA configuration; the wrapper adds no custom CA store. System `tar` extracts the
-Python archive; wheel extraction and SHA256 verification use the `zip` and `sha2`
-crates. Missing tools or missing/unusable digests fail boot, never fall back to an
-unverified artifact. Transfers are bounded by 512 MiB per artifact and 300 seconds
-per attempt. Only pre-retirement download errors retry, at most three attempts
-with 2s/4s backoff, and only after successful cleanup of this attempt's staging.
-Cleanup uncertainty/failure rejects boot and prevents retry.
+Schema-1 plans and `--runtime-python-release` / `RUNTIME_PYTHON_RELEASE` are
+**rejected**, not ignored. Remove the PBS input; use a uv request or a provisioned
+stable interpreter. Schema-1 installed manifests trigger preparation before
+retirement. Historical Trellis design documents describe the superseded schema.
 
-The default pins are configured values, **not a claim of current upstream
-availability**. The default PBS tag was selected for CPython `3.13.18`; verify
-the actual platform artifact/version and trusted hashes before rollout. Live
-default availability, the API-digest trust choice when no plan is supplied,
-transfer limits, system-tool availability and the wheel's dependency closure
-remain rollout checks (A1-A6); offline fixture tests do not establish them.
+Schema-2 plans retain a hash-pinned platform binary and optional hash-pinned
+pure-Python yt-dlp wheel. Replace example paths/hashes with actual trusted inputs:
+
+```json
+{
+  "schema_version": 2,
+  "yt_dlp": "2026.10.26",
+  "offline": true,
+  "wheelhouse": "/absolute/offline-wheelhouse",
+  "artifacts": [
+    {"name": "yt-dlp_linux", "url": "file:///absolute/yt-dlp_linux", "sha256": "<64 hex digits>"},
+    {"name": "yt_dlp-2026.10.26-py3-none-any.whl", "url": "file:///absolute/yt_dlp-2026.10.26-py3-none-any.whl", "sha256": "<64 hex digits>"}
+  ]
+}
+```
+
+`offline` defaults false; `wheelhouse` is optional. Offline sets uv's
+`--offline --no-index`: provision a stable interpreter with `--runtime-python`
+and supply all required wheels. uv checks the explicit version against wheel
+metadata and resolves dependencies. Rust does not parse PEP 440/508. URLs may
+use https:// or file://; endpoint changes alone do not change artifact identity.
+The wheelhouse is an input source, not a transitive hash lock.
+
+The default yt-dlp pin is `2026.10.26`. Official GitHub release metadata and PyPI
+wheel metadata were verified available on 2026-11-08; the former `2026.09.23` pin
+returned 404 on both sources. Metadata availability is not successful live-boot
+evidence: CI must still exercise the real entrypoint. The installer never
+silently substitutes a release, and offline fixtures are not live evidence.
 
 ### Deployment And Recovery (A8/A9)
 
@@ -157,7 +196,7 @@ corrupt manifest. This is an operator-enforced precondition, not automatic locki
 leases, or shared-root multi-instance support. Give overlapping instances separate
 private roots instead of rolling replacements in the same root.
 
-Preparation downloads, extracts and verifies the candidate, then syncs its manifest
+Preparation acquires the binary and lets uv prepare/validate the candidate, then syncs its manifest
 (and candidate directory on Unix) before touching the old runtime.
 **Preparation failure preserves old bytes but rejects boot.**
 After verification, publication invalidates the old manifest, removes the old tree,

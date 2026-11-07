@@ -1,0 +1,49 @@
+{
+  "round": 1,
+  "scope_summary": "C1-C3 hosted-CI repair only: UNIX-only error scoping, valid same-executable request fixture, and source-backed uv safe-skip containment assertions. No resolver/environment algorithm, pin, dependency, worker, HTTP/lifecycle/pool, workflow/Docker/script/spec, shared fixture, or prior-report changes. No subagents, heavy/native tests, provisioning, Docker execution, Git delivery, merge, or publication.",
+  "changes": [
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Scope PermissionFailure and its error-string match arm to cfg(unix); leave both UNIX constructors and the existing permission regression unchanged.",
+      "spec_clause": "M3/M5; C1"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Change the Python request to an alternate spelling of the same existing executable; assert canonical equivalence, distinct recorded requests, identical probed environment, and all original replacement/runtime-id/path assertions.",
+      "spec_clause": "M1/M3/M5; C2"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Require uv's source-documented safe skipping of ../outside, valid publication and staging cleanup, and absence of the payload throughout the isolated cache/runtime fixture; retain existing invalid-archive failure/recovery tests unchanged.",
+      "spec_clause": "M1/M3/M5; C3"
+    },
+    {
+      "file": ".trellis/tasks/11-06-immutable-runtime-install/review/managed-python-ci-progress.md",
+      "intent": "Record starting state, exact source references, repair rationale, executed lightweight checks and failures, and pending hosted gates without self-approval.",
+      "spec_clause": "M5/M6; C1/C2/C3"
+    },
+    {
+      "file": ".trellis/tasks/11-06-immutable-runtime-install/review/managed-python-ci-responses.json",
+      "intent": "Provide complete evidence-backed responses to C1-C3 for coordinator review.",
+      "spec_clause": "M5/M6; C1/C2/C3"
+    }
+  ],
+  "test_notes": "Actual local commands: uv --version and uv venv --help exited 0 (pinned 0.11.29); initial cargo fmt --check exited 1 for one new expression, scoped rustfmt exited 0, rerun cargo fmt --check exited 0; scoped git diff --check exited 0. Read-only PowerShell checks against git show HEAD exited 0: production differs only by two cfg attributes, all 17 unrelated async tests and the total count of 19 are preserved, identity/containment guards are present, and tracked scope is preserved. Official 0.11.29 raw GitHub reads succeeded with HTTP 200 after an initial sandbox authentication failure and a corrected guessed documentation path (404); exact URLs and line references are in managed-python-ci-progress.md. Key evidence: uv-extract/src/sync.rs 63-82 skips unsafe paths before writes, stream.rs 19-36 rejects leading parent traversal and 119-131 skips the entry, uv-distribution/src/distribution_database.rs 1185-1218 extracts under the cache root, and uv-python/src/discovery.rs 1858-1866 plus docs/concepts/python-versions.md 44-52 distinguish executable files from environment roots. No native execution, builds, Clippy, Rust suite, runtime provisioning or Docker was run. Repaired-candidate native Windows/Linux Clippy/tests/release gates and coordinator review remain pending. Baseline Docker success was supplied by the coordinator, not rerun here.",
+  "finding_responses": [
+    {
+      "id": "C1",
+      "response": "ACCEPTED",
+      "action_or_evidence": "Applied cfg(unix) to the PermissionFailure variant and as_str arm. Constructors and permission regression were already UNIX-scoped. Source comparison proves the entire production file otherwise equals HEAD; no warning suppression or UNIX behavior change. Windows Clippy remains a hosted verification obligation."
+    },
+    {
+      "id": "C2",
+      "response": "ACCEPTED",
+      "action_or_evidence": "Replaced the invalid parent-directory request with the same explicit executable path containing a current-directory component. Pinned official docs and PythonRequest::parse confirm executable-file semantics. The test now asserts request-text inequality, canonical-path equality, distinct manifest requests and equal complete environment identities while retaining all replacement, runtime-id, fixed-path and cleanup assertions. No version hardcode, PATH reselection, OS skip or download was added."
+    },
+    {
+      "id": "C3",
+      "response": "ACCEPTED",
+      "action_or_evidence": "Pinned uv source shows safe skipping, not rejection or normalization: enclosed_name returns None for ../outside, sync extraction returns Ok(None) before writes, and streaming extraction skips/continues. Local-wheel extraction occurs in a temporary directory under libs/uv-cache. Renamed the test to real_uv_skips_unsafe_wheel_paths_without_escape; retained the malformed entry, required valid publication via assert_installed_plan (including staging cleanup), and added a non-symlink-following directory-entry walk that fails on outside anywhere in the isolated fixture, including the relevant extraction parent and retained cache/runtime trees. Existing hash-pinned non-ZIP failure/no-publication/recovery and prior-runtime preservation tests remain byte-for-byte unchanged. This source inspection is not execution evidence; hosted native validation remains pending."
+    }
+  ]
+}

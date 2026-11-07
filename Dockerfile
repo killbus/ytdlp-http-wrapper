@@ -18,6 +18,9 @@ RUN cargo build --release && \
 
 FROM debian:bookworm-slim
 
+# Deployment owns uv upgrades; Rust never installs or updates the tool itself.
+COPY --from=ghcr.io/astral-sh/uv:0.11.29 /uv /usr/local/bin/uv
+
 ARG TARGETARCH
 
 RUN <<'EOF'

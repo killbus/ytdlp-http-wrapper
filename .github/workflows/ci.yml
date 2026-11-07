@@ -30,6 +30,10 @@ jobs:
         with:
           python-version: '3.13'
 
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.11.29'
+
       - name: Install repository Rust toolchain and components
         run: rustup show active-toolchain
       - run: rustup component add rustfmt clippy
@@ -56,3 +60,6 @@ jobs:
           bash scripts/ci-container.sh
           --cache-from=type=gha
           --cache-to=type=gha,mode=max
+
+      - name: Real installer boot and resident reuse
+        run: python scripts/runtime-boot-smoke.py --image ytdlp-http-wrapper:local

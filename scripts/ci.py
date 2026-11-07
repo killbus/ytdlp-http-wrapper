@@ -76,7 +76,7 @@ def require_permission_denial():
 
 def fixture_prerequisites():
     require_permission_denial()
-    for tool in ("tar", "curl"):
+    for tool in ("tar", "curl", "uv"):
         require_tool(tool)
         run([tool, "--version"])
     # Match the frozen Rust fixtures' interpreter search, rather than assuming

@@ -2,7 +2,8 @@
 
 Run from the repository root, or supply an absolute script path from another
 directory. Scripts select the repository root themselves. No script publishes
-images/releases or invokes the production runtime installer against a real root.
+images/releases or touches deployed roots. The explicit real-boot smoke provisions
+a runtime only in its own disposable container volume.
 
 ## Shared Windows/Linux gates
 
@@ -22,7 +23,7 @@ bash scripts/ci.sh check
 
 Prerequisites: rustup/Cargo/rustc with the toolchain and components selected by
 `rust-toolchain.toml`; Python 3.10+ available as `python` or `python3`; system tar
-supporting gzip archives and curl for fixture transfers; Bash and its standard
+supporting gzip archives, curl for fixture transfers, and uv 0.11.29; Bash and its standard
 Unix tools for script tests (Git for Windows supplies these). CI explicitly
 supplies Python 3.13 on both matrix
 hosts. CI uses rustup's repository toolchain selection, not a separate stable pin.
@@ -52,7 +53,7 @@ The dependency graph fixture checks the resulting graph, not delivery history.
 
 ```sh
 bash scripts/ci-linux-smoke.sh
-bash scripts/ci-linux-smoke.sh 2026.09.23  # explicit reproduction tag, not a new default
+bash scripts/ci-linux-smoke.sh 2026.10.26  # explicit reproduction tag, not a new default
 ```
 
 Requires native x86_64 Linux, Bash, Cargo/toolchain, GitHub CLI (`gh`), sha256sum,
@@ -82,7 +83,7 @@ it does not fetch a public video. Cargo can still acquire missing dependencies.
 The consumer explicitly selects the native Linux Rust host target too, so a
 cross-target Cargo default cannot turn the Linux-only test into a zero-test run.
 This is a separate standalone-binary test, not a copy of the production resolver,
-PBS/wheel validation, or evidence that runtime defaults/assumptions A1-A6 are valid.
+managed Python validation, or evidence that runtime defaults/assumptions A1-A6 are valid.
 
 ## Container build and Compose smoke (networked build)
 
@@ -93,7 +94,7 @@ bash scripts/ci-container.sh --cache-from=type=gha --cache-to=type=gha,mode=max
 ```
 
 Requires Linux, an accessible Linux Docker daemon, buildx, Compose v2 and network
-access for the existing Dockerfile's build inputs. Uses the unchanged Dockerfile
+access for the existing Dockerfile's build inputs. Uses the Dockerfile with its pinned official uv tool
 and explicit repository compose.yaml; validates Compose, builds/loads the existing
 `ytdlp-http-wrapper:local` tag, then runs `scripts/container-smoke.sh` as the image's
 non-root user instead of starting the wrapper. Only optional build cache arguments
@@ -126,3 +127,33 @@ validation and actual release builds need their own run records. A release build
 is not release publication; mount smoke is not production boot or deployment
 acceptance. A1-A6 rollout confirmation and AC1's owner delivery-commit/history
 check remain separate from these scripts.
+
+## Real installer boot (CI-only networked gate)
+
+```sh
+python scripts/runtime-boot-smoke.py --image ytdlp-http-wrapper:local
+# Only with an explicitly chosen deployment pin:
+python scripts/runtime-boot-smoke.py --image ytdlp-http-wrapper:local --yt-dlp-version <pin>
+```
+
+The Docker workflow calls this in addition to the unchanged containment smoke.
+It uses the image's real dumb-init/application entrypoint and non-root user, a
+unique disposable downloads volume, 1 GiB/512 MiB tmpfs budgets and a 900-second
+per-boot deadline. It checks CLI `/run --version`, clean shutdown, then resident
+startup using the same runtime with network disabled and uv unavailable. The
+second request must return the same explicit yt-dlp version and retain a
+byte-identical manifest/runtime ID; logs must report `runtime_reused`. Cleanup
+stops/awaits owned containers before removing their private volume; uncertain
+stop retains the data. No deployed roots or existing volumes are used.
+
+The default version is the owner-approved application pin 2026.10.26, not latest.
+GitHub release and PyPI wheel metadata were verified available on 2026-11-08.
+This gate inherits the application's default; it has no separate pin or fallback.
+Metadata availability does not establish successful boot, and no real boot has
+run locally for this change.
+
+Offline Rust installer fixtures now require uv 0.11.29 and host Python. CI creates
+venvs using that existing interpreter and synthetic local wheels with METADATA;
+`--offline --no-index` prevents runtime/package downloads. These exercise actual
+uv resolution/publication, not upstream availability. Synthetic command-injection
+tests are separately identified in their test names.

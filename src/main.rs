@@ -107,7 +107,7 @@ struct Cli {
     #[arg(
         long = "runtime-yt-dlp-version",
         env = "RUNTIME_YTDLP_VERSION",
-        default_value = "2026.09.23",
+        default_value = "2026.10.26",
         help = "Pinned yt-dlp version installed into the immutable runtime"
     )]
     runtime_yt_dlp_version: String,
@@ -115,15 +115,29 @@ struct Cli {
     #[arg(
         long = "runtime-python-release",
         env = "RUNTIME_PYTHON_RELEASE",
-        default_value = "20261026",
-        help = "python-build-standalone release tag for the runtime interpreter"
+        help = "Removed PBS input; rejected with uv migration guidance"
     )]
-    runtime_python_release: String,
+    runtime_python_release: Option<String>,
+
+    #[arg(
+        long = "runtime-python",
+        env = "RUNTIME_PYTHON",
+        help = "Optional uv Python request; otherwise reuse the recorded interpreter or use uv-managed CPython discovery"
+    )]
+    runtime_python: Option<String>,
+
+    #[arg(
+        long = "runtime-uv",
+        env = "RUNTIME_UV",
+        default_value = "uv",
+        help = "uv executable (deployment prerequisite, not downloaded by Rust)"
+    )]
+    runtime_uv: PathBuf,
 
     #[arg(
         long = "runtime-plan",
         env = "RUNTIME_PLAN",
-        help = "Optional runtime source plan JSON (file:// URLs are supported for offline tests)"
+        help = "Optional schema-2 binary/wheel source plan JSON; schema-1 PBS plans are rejected"
     )]
     runtime_plan: Option<PathBuf>,
 }
@@ -179,6 +193,8 @@ async fn install_runtime(cli: &Cli) -> Result<RuntimePaths, Box<dyn std::error::
         plan_path: cli.runtime_plan.clone(),
         yt_dlp_version: cli.runtime_yt_dlp_version.clone(),
         python_release_tag: cli.runtime_python_release.clone(),
+        python_request: cli.runtime_python.clone(),
+        uv_path: cli.runtime_uv.clone(),
         worker_yt_dlp_version: cli.worker_yt_dlp_version.clone(),
     })
     .await
@@ -324,8 +340,10 @@ mod tests {
     fn defaults_keep_cli_and_pinned_runtime() {
         let cli = cli(&[]);
         assert_eq!(cli.libs_dir, PathBuf::from("libs"));
-        assert_eq!(cli.runtime_yt_dlp_version, "2026.09.23");
-        assert_eq!(cli.runtime_python_release, "20261026");
+        assert_eq!(cli.runtime_yt_dlp_version, "2026.10.26");
+        assert!(cli.runtime_python_release.is_none());
+        assert!(cli.runtime_python.is_none());
+        assert_eq!(cli.runtime_uv, PathBuf::from("uv"));
         assert!(cli.runtime_plan.is_none());
         assert!(cli.worker_python.is_none());
         assert!(cli.worker_path.is_none());
@@ -360,6 +378,8 @@ mod tests {
             .env("LIBS_DIR", "env-libs")
             .env("RUNTIME_YTDLP_VERSION", "env-version")
             .env("RUNTIME_PYTHON_RELEASE", "20261026")
+            .env("RUNTIME_PYTHON", "cpython>=3.12")
+            .env("RUNTIME_UV", "env-uv")
             .env("RUNTIME_PLAN", "env-plan.json")
             .env("WORKER_PYTHON", "env-python")
             .env("WORKER_PATH", "env-worker.py")
@@ -387,7 +407,9 @@ mod tests {
         assert_eq!(cli.backend, "resident");
         assert_eq!(cli.libs_dir, PathBuf::from("env-libs"));
         assert_eq!(cli.runtime_yt_dlp_version, "env-version");
-        assert_eq!(cli.runtime_python_release, "20261026");
+        assert_eq!(cli.runtime_python_release.as_deref(), Some("20261026"));
+        assert_eq!(cli.runtime_python.as_deref(), Some("cpython>=3.12"));
+        assert_eq!(cli.runtime_uv, PathBuf::from("env-uv"));
         assert_eq!(cli.runtime_plan, Some("env-plan.json".into()));
         assert_eq!(cli.worker_python, Some("env-python".into()));
         assert_eq!(cli.worker_path, Some("env-worker.py".into()));
@@ -405,6 +427,10 @@ mod tests {
             "flag-version",
             "--runtime-python-release",
             "20260101",
+            "--runtime-python",
+            "cpython>=3.14",
+            "--runtime-uv",
+            "flag-uv",
             "--runtime-plan",
             "flag-plan.json",
             "--worker-python",
@@ -422,7 +448,9 @@ mod tests {
         assert_eq!(cli.backend, "cli");
         assert_eq!(cli.libs_dir, PathBuf::from("flag-libs"));
         assert_eq!(cli.runtime_yt_dlp_version, "flag-version");
-        assert_eq!(cli.runtime_python_release, "20260101");
+        assert_eq!(cli.runtime_python_release.as_deref(), Some("20260101"));
+        assert_eq!(cli.runtime_python.as_deref(), Some("cpython>=3.14"));
+        assert_eq!(cli.runtime_uv, PathBuf::from("flag-uv"));
         assert_eq!(cli.runtime_plan, Some("flag-plan.json".into()));
         assert_eq!(cli.worker_python, Some("flag-python".into()));
         assert_eq!(cli.worker_path, Some("flag-worker.py".into()));

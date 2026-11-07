@@ -1,0 +1,97 @@
+{
+  "done": false,
+  "verdict": "FAIL",
+  "round": 1,
+  "system_context": {
+    "production_entries": [
+      "src/main.rs:204 enters serve; src/main.rs:221 parses deployment inputs; src/main.rs:261 awaits install_runtime before backend.start at src/main.rs:270 and listener binding at src/main.rs:281. src/main.rs:190 forwards the explicit version, Python request, uv executable and optional source plan to ensure_runtime.",
+      "src/runtime_installer.rs:201 delegates blocking boot work to install_with_retry. src/runtime_installer.rs:241 validates configuration/layout, reads recorded identity, checks reuse, prepares owned staging, probes the candidate and calls publish. src/runtime_installer.rs:1563 preserves the existing invalidate/remove/rename boundary and validates the published environment before returning paths.",
+      "Dockerfile:81 retains the dumb-init/application entrypoint and Dockerfile:74 retains non-root execution. .github/workflows/ci.yml:65 invokes scripts/runtime-boot-smoke.py:64 against the image built by scripts/ci-container.sh:21; scripts/runtime-boot-smoke.py:74 does not override the entrypoint."
+    ],
+    "upstream_callers": [
+      "src/main.rs:145 selects CLI or resident configuration from returned RuntimePaths; src/main.rs:274 places the standalone binary into AppState. /run reaches executor::execute through src/routes.rs:66 and src/routes.rs:75. src/executor.rs:101 selects supervisor::supervise for CLI and backend::reside for resident, without calling the installer per request.",
+      "src/backend.rs:142 starts the resident manager; src/resident_worker_manager.rs:59 delegates to the pool; src/resident_worker_pool.rs:263 starts isolated workers. src/main.rs:301 waits for tracked request cleanup and shuts down the backend.",
+      ".github/workflows/ci.yml:43 invokes scripts/ci.py:143, which runs locked all-target Clippy at scripts/ci.py:147 and native Rust tests at scripts/ci.py:164. Installer integration fixtures call the public ensure_runtime entry at tests/runtime_install.rs:246; private unit fixtures call the same install_once path at src/runtime_installer.rs:1990."
+    ],
+    "downstream_dependencies": [
+      "src/runtime_installer.rs:484 retains exact GitHub binary-release resolution and src/runtime_installer.rs:519 retains digest/SHA2-256SUMS validation. src/runtime_installer.rs:1128 acquires and verifies retained artifacts before copying the standalone binary and embedded worker.",
+      "src/runtime_installer.rs:1172 creates isolated uv command configuration and stable private uv-python/uv-cache paths. src/runtime_installer.rs:1214 delegates interpreter selection to uv venv, explicit yt-dlp dependency resolution to uv pip install, and dependency consistency to uv pip check. src/runtime_installer.rs:267 prefers the recorded observed base for an unchanged Python request. worker/probe_environment.py:24 checks venv/base/import paths and records actual interpreter/distribution identity; src/runtime_installer.rs:683 compares that observation during validation.",
+      "src/supervisor.rs:219 spawns state.binary_path directly, retaining ProcessGroup/JobObject containment at src/supervisor.rs:228. src/resident_worker.rs:147 spawns the configured interpreter and script with installed package paths; src/resident_worker.rs:159 retains containment and src/resident_worker.rs:573 validates the unchanged handshake. worker/ytdlp_worker.py:135 imports yt_dlp and worker/ytdlp_worker.py:153 executes requests through the existing adapter.",
+      "Dockerfile:22 supplies official uv 0.11.29; .github/workflows/ci.yml:33 supplies the same version for native fixtures. scripts/ci-container.sh:22 still runs the separate containment smoke, whose non-root/tmpfs assertions remain at scripts/container-smoke.sh:4. scripts/runtime-boot-smoke.py:71 boots CLI then resident against one owned volume; scripts/runtime-boot-smoke.py:27 disables networking and substitutes a missing uv executable for resident reuse. Version/manifest/reuse checks are at scripts/runtime-boot-smoke.py:78, clean shutdown at scripts/runtime-boot-smoke.py:57, and owned cleanup at scripts/runtime-boot-smoke.py:86."
+    ],
+    "module_and_spec_responsibility": "Reviewed HEAD 658075b17d1d02475bc2506ba86d93caac03714c on fix/pbs-cpython-selection, all task-owned tracked diffs, and all four new production/test files. All 16 candidate snapshot hashes and all 13 protected starting hashes match; no unauthorized historical/spec edits or new unexplained changes were found. M0-M6 in .trellis/tasks/11-06-immutable-runtime-install/review/managed-python-owner-decisions.md:24 govern uv ownership and supersede historic PBS/manual-package policy. Rust remains responsible for orchestration, binary integrity, owned staging/publication and execution; uv owns Python/package mechanics. Unaffected fixed-root publication boundaries remain in .trellis/tasks/11-06-immutable-runtime-install/design.md:384; HTTP/process cleanup remains governed by .trellis/spec/wrapper/backend/process-lifecycle.md, with CI-only heavy validation required by .trellis/spec/wrapper/backend/index.md."
+  },
+  "spec_conformance_summary": "The main responsibility split follows M1-M4: no Rust PBS enumeration/version table or custom dependency solver remains; uv receives the exact dependency request without optional extras or source builds, and incompatibility fails before admission without interpreter fallback. Reuse precedes live resolution, excludes uv executable availability from environment identity, and validates recorded interpreter/distribution observations. Schema-1 plans and legacy release flags are explicitly rejected with migration guidance, as permitted by M3. Stable private base/cache directories are not moved or swept; preparation and fixed-path publication retain their ownership/failure boundaries. CLI/resident/protocol/pool/supervisor files and Cargo.lock are unchanged. Acceptance nevertheless fails for the compile regression, the newly introduced post-publication root-inference defect, and removal of unrelated transfer-safety assertions described below. uv 0.11.29 version/help inspection confirms the composed command options exist; it is not live environment evidence. No source/spec fixes, subagents, Git delivery actions, heavyweight Rust gates, Docker execution or runtime provisioning were performed.",
+  "test_assertion_review": "Read the complete changed installer unit/integration assertions and new fixture/probe/smoke files. Removing PBS enumeration, tar extraction and Rust PyPI metadata-selection assertions is justified by M1/M3; replacing PBS archive corruption with retained-wheel corruption, fixed site-packages spelling with probed venv paths, and ordinary-only snapshots with symlink-target-aware snapshots reflects the new ownership model. Fixed-path replacement, old-only sentinel removal, no-fetch byte-identical reuse, failed-preparation snapshots, manifest/worker/binary hashes, foreign-staging preservation, native locks/permissions, uncertain-writer preservation and post-rename cleanup disarming remain asserted. New real-uv offline tests cover Requires-Python failure, missing/installed mandatory dependencies, excluded extras, missing-uv reuse, explicit request changes and unsafe wheel rejection; their wheels and binary payloads are synthetic, not upstream runtime evidence. The new command-injection test checks delegation rather than claiming real uv behavior. F3 identifies the unrelated binary-transfer assertion loss. F1 currently prevents native integration-test compilation. Independently ran only the four mocked tests in scripts/tests/test_runtime_boot_smoke.py with python -B: 4 passed in 0.003 seconds; they confirm argument/exit handling, not container boot. A tiny AST-extracted check of worker/probe_environment.py:32 reproduced F2 for both PurePosixPath and PureWindowsPath without files, subprocess provisioning or environment installation. Windows/Linux Rust tests, actual uv publication/relocation, release builds, containment/onefile tests and real upstream boot remain pending CI.",
+  "blocking_findings": [
+    {
+      "id": "F1",
+      "violated_clause": {
+        "artifact": ".trellis/tasks/11-06-immutable-runtime-install/review/managed-python-owner-decisions.md",
+        "locator": "M5: verification through native CI; .trellis/spec/wrapper/backend/index.md Quality Check requires Clippy and cargo test",
+        "tier": "spec"
+      },
+      "description": "[P1] Restore the Command import needed by the retained dependency-graph test. The changed import block at tests/runtime_install.rs:7 removes use std::process::Command, but tests/runtime_install.rs:907 still calls Command::new. There is no other Command import/type in this integration-test module; the private import in tests/fixtures/managed_runtime.rs:6 is scoped to mod managed and does not supply it. This is an unresolved-type compile error, so both native CI matrix jobs fail at all-target Clippy before any installer/lifecycle assertions can run. The defect is established from source and the baseline diff; no prohibited local build was run.",
+      "reachability_proof": [
+        ".github/workflows/ci.yml:24 selects Ubuntu and Windows; .github/workflows/ci.yml:43 runs python scripts/ci.py check",
+        "scripts/ci.py:147 invokes cargo clippy --locked --all-targets --target <host> -- -D warnings, compiling tests/runtime_install.rs",
+        "tests/runtime_install.rs:7 changed imports omit Command -> tests/runtime_install.rs:907 references the unresolved type"
+      ],
+      "minimal_fix_direction": "Restore use std::process::Command in tests/runtime_install.rs, or fully qualify the retained Command::new call. Keep the dependency-graph assertions intact.",
+      "verification": "Source-check the import/call binding, then run the existing locked all-target Clippy and native test gates on both CI hosts. The dependency_graph_has_no_yt_dlp_or_lofty test must compile and execute."
+    },
+    {
+      "id": "F2",
+      "violated_clause": {
+        "artifact": ".trellis/tasks/11-06-immutable-runtime-install/review/managed-python-owner-decisions.md",
+        "locator": "M3: stable base paths across publication, prepare/verify before retirement, and validate the published environment; M2: reuse a prepared valid environment",
+        "tier": "spec"
+      },
+      "description": "[P2] Do not infer the installation root from its basename. worker/probe_environment.py:32 treats any root whose parent is named staging as a candidate. With the supported --libs-dir /downloads/staging and the default managed interpreter under /downloads/staging/uv-python, candidate root /downloads/staging/staging/runtime-<id> correctly infers /downloads/staging and passes. After rename, root /downloads/staging/runtime incorrectly infers /downloads; line 33 then forbids the entire /downloads/staging tree and rejects the valid stable base. Thus every managed boot using a private root named staging fails only after publication, and a replacement can already have retired the old runtime at src/runtime_installer.rs:1580. Subsequent startups repeat the failure. The same path calculation reproduces with C:/libs/staging. I executed the actual AST-extracted lines 32-35 with both path flavors: candidate PASS, published FAIL ('base interpreter is inside replaceable storage'). No contract forbids this libs-dir basename.",
+      "reachability_proof": [
+        "src/main.rs:34 accepts an arbitrary libs-dir -> src/main.rs:190 forwards it -> src/runtime_installer.rs:243 canonicalizes that root",
+        "src/runtime_installer.rs:1190 places managed Python at <root>/uv-python -> src/runtime_installer.rs:298 probes <root>/staging/runtime-<id> before retirement",
+        "src/runtime_installer.rs:1580 retires the old tree -> src/runtime_installer.rs:1601 renames to <root>/runtime -> src/runtime_installer.rs:1608 calls validate_runtime",
+        "src/runtime_installer.rs:683 -> src/runtime_installer.rs:1269 -> worker/probe_environment.py:32 misidentifies <root> when its basename is staging and worker/probe_environment.py:34 rejects the stable base"
+      ],
+      "minimal_fix_direction": "Pass the authoritative canonical installation root into the private probe explicitly and use it for replaceable-storage checks in both candidate and published validation. Do not reconstruct ownership from a user-controlled directory basename or weaken the base containment assertions.",
+      "verification": "Add a regression for an installation root named staging, including Windows and POSIX path semantics. In CI, exercise a real uv-managed base beneath that root through cold install, publication, unchanged reuse and an update; require successful post-publication probes and no staging-dependent base paths. Retain rejection of bases genuinely inside the actual runtime/staging directories."
+    },
+    {
+      "id": "F3",
+      "violated_clause": {
+        "artifact": ".trellis/tasks/11-06-immutable-runtime-install/review/managed-python-owner-decisions.md",
+        "locator": "M5, line 107: tests must not remove/relax unrelated lifecycle or integrity assertions; M3 retains binary acquisition/integrity; historical design section 5 Download mechanics at design.md:282 remains applicable to curl",
+        "tier": "spec"
+      },
+      "description": "[P2] Preserve the binary metadata transfer safety assertions when removing PBS tests. The baseline live_resolution_uses_pinned_channels_and_transfer_arguments asserted the actual curl argv contained -fsSL --retry 0 --max-time 300 --max-filesize 67108864 and no injected proxy/cacert/latest arguments. Its replacement at src/runtime_installer.rs:2524 checks only artifact count/kind, command count and a URL suffix at src/runtime_installer.rs:2540. The PBS/PyPI endpoint assertions are obsolete, but these curl assertions still govern the unchanged standalone-binary metadata request. Remaining size tests at src/runtime_installer.rs:2803 and src/runtime_installer.rs:2815 only exercise post-collection/post-download length checks with synthetic replies; they cannot detect loss of curl's transfer-time size/deadline bounds. This is an explicit M5 assertion-preservation regression, not a demand to retain Rust-owned Python resolution.",
+      "reachability_proof": [
+        ".github/workflows/ci.yml:43 -> scripts/ci.py:164 runs installer unit tests, including src/runtime_installer.rs:2524",
+        "src/runtime_installer.rs:2536 calls resolve_plan -> src/runtime_installer.rs:484 resolve_live_plan -> src/runtime_installer.rs:491 github_release_artifact",
+        "src/runtime_installer.rs:525 calls curl_to_memory -> src/runtime_installer.rs:1388 constructs the binary metadata transfer arguments whose assertions were removed"
+      ],
+      "minimal_fix_direction": "Restore the existing curl transfer-argument and exact explicit binary-release URL assertions for the remaining single binary metadata call. Keep the obsolete PBS/PyPI-selection assertions removed and retain the separate new uv delegation tests.",
+      "verification": "The adapted unit test must fail if --max-time, --max-filesize or --retry 0 is removed/changed, or the binary resolver introduces latest/custom proxy/custom CA arguments. Run it through the existing native CI suite after F1 is repaired."
+    }
+  ],
+  "resolved_previous": [],
+  "withdrawn": [],
+  "follow_ups": [
+    {
+      "location": "src/main.rs:110; .github/workflows/ci.yml:65",
+      "issue": "The unchanged default yt-dlp pin 2026.09.23 remains unverified available. The owner records a PyPI 404, and the new real-entrypoint smoke deliberately uses that default unless an explicit pin is supplied. A live boot may therefore fail independently of these code defects.",
+      "why_out_of_scope": "M5 requires treating availability separately; this review neither changes the pin nor weakens the smoke. An evidence-backed deployment-pin decision belongs to the owner."
+    },
+    {
+      "location": ".github/workflows/ci.yml:43; .github/workflows/ci.yml:65",
+      "issue": "Locked Clippy, native Windows/Linux tests, release builds, actual uv-managed relocation/publication, existing lifecycle/onefile/containment checks and real CLI/resident boot/reuse have not been executed in this review and remain pending hosted CI.",
+      "why_out_of_scope": "M5 and the reviewer brief explicitly prohibit local heavy/native/live validation. Source reachability, tool help and four mocked smoke tests cannot substitute for those required run records."
+    }
+  ],
+  "discarded_count": {
+    "unreachable": 0,
+    "out_of_scope": 1,
+    "no_clause": 0
+  },
+  "escalation_reason": ""
+}

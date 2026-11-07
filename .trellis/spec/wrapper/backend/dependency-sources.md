@@ -7,13 +7,35 @@
 - Prefer a reachable public upstream source when it serves the identical commit.
   Preserve the revision and package versions when only repairing a source URL;
   check all lockfile packages originating from that Git repository.
-- The lofty patch uses public `Serial-ATA/lofty-rs` at
-  `d2e41640481a48a95303d95939ba831767afcec8`. It preserves yt-dlp 2.7.2
-  compatibility and the replacement of abandoned `paste` with `pastey`
-  (RUSTSEC-2024-0436). The old `boul2gom/lofty-rs` endpoint returned 404.
-  Do not remove the patch without verifying compatibility and its original purpose.
+- The yt-dlp Cargo dependency and its lofty patch were removed together with
+  their replacement installer. Do not reintroduce either as a runtime manager.
 - Use CI for locked Clippy, tests and release builds; do not repeat heavyweight
   work locally. Local formatting and lockfile/source verification are sufficient
   before pushing a reviewed repair to the PR branch.
   Windows, Linux and Docker CI must resolve the corrected source; a failure before
   compilation is not evidence of a failing runtime assertion.
+
+## Python Runtime Ownership
+
+- Boot prepares the runtime before admission. CLI executes the standalone
+  yt-dlp binary; resident workers use isolated CPython subprocesses. Runtime
+  preparation must not move into a request handler or require rebuilding Rust.
+- Deployment supplies a pinned uv executable. uv owns interpreter discovery,
+  Python downloads and package resolution; Rust owns binary integrity and
+  environment publication. Do not maintain PBS version tables, download metadata
+  or Python dependency solvers in Rust. Requires-Python constrains compatibility,
+  not a uniquely selected interpreter. Do not claim uv venv automatically searches
+  interpreters satisfying all package dependencies.
+- Use the explicit yt-dlp request for both binary and package identity. Verify
+  proposed release pins against both official GitHub and PyPI metadata. Never
+  silently substitute latest or another release. Metadata availability and mock
+  tests do not establish successful installation: retain real-entrypoint CI boot
+  checks in addition to container containment checks.
+- Reuse a validated recorded environment without network resolution; prefer its
+  compatible stable base for updates. Keep base interpreters outside replaceable
+  runtime/staging trees, and pass the canonical installation root explicitly to
+  validation. Directory basenames are not proof of ownership or publication state.
+- Fixed-root replacement still requires stop/await/start. It is not hot reload.
+  Prepare and verify before retiring the old runtime; clean only owned quiescent
+  staging. Preserve binary transfer/integrity assertions when removing obsolete
+  Python resolver tests. Reject unsupported legacy inputs with migration guidance.

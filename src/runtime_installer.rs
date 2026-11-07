@@ -1,14 +1,13 @@
 //! Immutable yt-dlp runtime installation.
 //!
 //! This module is a leaf owned by boot. It resolves and pins a yt-dlp binary,
-//! a python-build-standalone CPython runtime, and the yt_dlp wheel; downloads
-//! them into owned staging; and replaces the single `runtime/` before serving.
+//! and delegates Python/environment preparation to uv in owned staging.
+//! Managed base interpreters have a stable private location outside `runtime/`.
 //! The private root requires stop/await/start deployment. Retirement followed
 //! by rename is not a crash-atomic transaction and retains no old runtime.
 //!
-//! General-purpose crates (`sha2`, `zip`) provide hashing and ZIP extraction.
-//! The installer owns orchestration and integrity policy; it does not
-//! reimplement SHA-256, DEFLATE, or ZIP parsing.
+//! Rust owns binary integrity, publication and execution; uv owns Python and
+//! package resolution. No Python release discovery policy lives here.
 
 use std::fmt;
 use std::fs::{self, File};
@@ -18,6 +17,7 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
 
@@ -28,17 +28,21 @@ const ARTIFACTS_DIR: &str = "artifacts";
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const DEFAULT_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_ATTEMPTS: u32 = 3;
-const MANIFEST_SCHEMA_VERSION: i64 = 1;
+const MANIFEST_SCHEMA_VERSION: i64 = 2;
+const ENVIRONMENT_PROBE: &str = include_str!("../worker/probe_environment.py");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeErrorCode {
     ConfigInvalid,
     VersionMismatch,
     CurlMissing,
+    UvMissing,
+    EnvironmentFailure,
     DownloadFailure,
     ResolveFailure,
     IntegrityFailure,
     ExtractFailure,
+    #[cfg(unix)]
     PermissionFailure,
     PublishFailure,
     StagingFailure,
@@ -50,10 +54,13 @@ impl RuntimeErrorCode {
             Self::ConfigInvalid => "RUNTIME_CONFIG_INVALID",
             Self::VersionMismatch => "RUNTIME_VERSION_MISMATCH",
             Self::CurlMissing => "RUNTIME_CURL_MISSING",
+            Self::UvMissing => "RUNTIME_UV_MISSING",
+            Self::EnvironmentFailure => "RUNTIME_ENVIRONMENT_FAILURE",
             Self::DownloadFailure => "RUNTIME_DOWNLOAD_FAILURE",
             Self::ResolveFailure => "RUNTIME_RESOLVE_FAILURE",
             Self::IntegrityFailure => "RUNTIME_INTEGRITY_FAILURE",
             Self::ExtractFailure => "RUNTIME_EXTRACT_FAILURE",
+            #[cfg(unix)]
             Self::PermissionFailure => "RUNTIME_PERMISSION_FAILURE",
             Self::PublishFailure => "RUNTIME_PUBLISH_FAILURE",
             Self::StagingFailure => "RUNTIME_STAGING_FAILURE",
@@ -105,7 +112,9 @@ pub struct RuntimeConfig {
     pub libs_dir: PathBuf,
     pub plan_path: Option<PathBuf>,
     pub yt_dlp_version: String,
-    pub python_release_tag: String,
+    pub python_release_tag: Option<String>,
+    pub python_request: Option<String>,
+    pub uv_path: PathBuf,
     pub worker_yt_dlp_version: Option<String>,
 }
 
@@ -118,10 +127,10 @@ pub struct RuntimePaths {
     pub runtime_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum ArtifactKind {
     Binary,
-    Python,
     Wheel,
 }
 
@@ -129,16 +138,16 @@ impl ArtifactKind {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Binary => "binary",
-            Self::Python => "python",
             Self::Wheel => "wheel",
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum SourceChannel {
     GithubRelease,
-    PythonBuildStandalone,
+    #[serde(rename = "pypi")]
     PyPI,
 }
 
@@ -146,13 +155,12 @@ impl SourceChannel {
     const fn as_str(self) -> &'static str {
         match self {
             Self::GithubRelease => "github-release",
-            Self::PythonBuildStandalone => "python-build-standalone",
             Self::PyPI => "pypi",
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResolvedArtifact {
     name: String,
     kind: ArtifactKind,
@@ -162,12 +170,20 @@ struct ResolvedArtifact {
     sha256: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RuntimePlan {
     yt_dlp_version: String,
-    python_release_tag: String,
-    python_version: String,
+    python_request: Option<String>,
     artifacts: Vec<ResolvedArtifact>,
+    offline: bool,
+    wheelhouse: Option<PathBuf>,
+    environment: JsonValue,
+    #[serde(skip, default = "default_uv_path")]
+    uv_path: PathBuf,
+}
+
+fn default_uv_path() -> PathBuf {
+    PathBuf::from("uv")
 }
 
 impl RuntimePlan {
@@ -230,29 +246,62 @@ fn install_once(config: &RuntimeConfig, worker_script: &[u8]) -> Result<RuntimeP
     let destination = root.join("runtime");
     let original = inspect_directory(&destination, &root)?;
     inspect_directory(&root.join("staging"), &root)?;
-    let plan = resolve_plan(config)?;
     let worker_hash = sha256_hex(worker_script);
-    let runtime_id = derive_runtime_id(&plan, &worker_hash)?;
-    if original.is_some() {
-        match validate_runtime(&destination, &plan, &runtime_id, &worker_hash) {
-            Ok(paths) => {
-                tracing::info!(runtime_id = %runtime_id, "runtime_reused");
-                return Ok(paths);
-            }
-            Err(error) if error.code == RuntimeErrorCode::IntegrityFailure => {
-                tracing::info!(runtime_id = %runtime_id, reason = %error, "runtime_reinstall_required");
-            }
-            Err(error) => return Err(error),
-        }
+    let previous = read_manifest(&destination).ok();
+    let recorded = previous.as_ref().and_then(|value| {
+        (value["schema_version"] == MANIFEST_SCHEMA_VERSION)
+            .then(|| serde_json::from_value::<RuntimePlan>(value["plan"].clone()).ok())
+            .flatten()
+    });
+    // Live reuse needs no metadata request. Explicit source plans still check pins.
+    let mut plan = if config.plan_path.is_some() {
+        resolve_plan(config)?
+    } else if let Some(recorded) = recorded.as_ref().filter(|plan| {
+        plan.yt_dlp_version == config.yt_dlp_version && plan.python_request == config.python_request
+    }) {
+        recorded.clone()
     } else {
-        tracing::info!(runtime_id = %runtime_id, reason = "absent", "runtime_reinstall_required");
+        resolve_plan(config)?
+    };
+    plan.uv_path = config.uv_path.clone();
+    let mut preferred_python = None;
+    if let Some(recorded) = recorded.as_ref() {
+        match probe_environment(&root, &destination, &recorded.yt_dlp_version) {
+            Ok(observed) => {
+                if observed == recorded.environment
+                    && recorded.python_request == plan.python_request
+                {
+                    preferred_python = observed["base_executable"].as_str().map(PathBuf::from);
+                }
+            }
+            Err(error) if !error.cleanup_safe => return Err(error),
+            Err(_) => (),
+        }
+        if request_identity(&plan) == request_identity(recorded) {
+            plan.environment = recorded.environment.clone();
+            let runtime_id = derive_runtime_id(&plan, &worker_hash)?;
+            match validate_runtime(&root, &destination, &plan, &runtime_id, &worker_hash) {
+                Ok(paths) => {
+                    tracing::info!(runtime_id = %runtime_id, "runtime_reused");
+                    return Ok(paths);
+                }
+                Err(error) if error.code == RuntimeErrorCode::IntegrityFailure => {
+                    tracing::info!(reason = %error, "runtime_reinstall_required");
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
-
+    tracing::info!("runtime_reinstall_required");
     let mut staging = OwnedStaging::create(&root)?;
-    let result = prepare_staging(&staging.path, &plan, worker_script).and_then(|()| {
+    let result = (|| {
+        prepare_staging(&staging.path, &plan, worker_script)?;
+        prepare_environment(&root, &staging.path, &plan, preferred_python.as_deref())?;
+        plan.environment = probe_environment(&root, &staging.path, &plan.yt_dlp_version)?;
+        let runtime_id = derive_runtime_id(&plan, &worker_hash)?;
         write_manifest(&staging.path, &plan, &runtime_id, &worker_hash)?;
         sync_directory(&staging.path, "candidate-sync", "old-or-absent")?;
-        validate_runtime(&staging.path, &plan, &runtime_id, &worker_hash)?;
+        validate_runtime(&root, &staging.path, &plan, &runtime_id, &worker_hash)?;
         publish(
             &mut staging,
             &destination,
@@ -261,7 +310,7 @@ fn install_once(config: &RuntimeConfig, worker_script: &[u8]) -> Result<RuntimeP
             &runtime_id,
             &worker_hash,
         )
-    });
+    })();
     match result {
         Ok(paths) => Ok(paths),
         Err(error) => {
@@ -285,13 +334,20 @@ fn validate_config(config: &RuntimeConfig) -> Result<()> {
             "runtime yt-dlp version must not be empty",
         ));
     }
-    if !is_numeric_release_tag(&config.python_release_tag) {
+    if config.python_release_tag.is_some() {
         return Err(RuntimeInstallError::new(
             RuntimeErrorCode::ConfigInvalid,
-            format!(
-                "python release tag must be numeric: {}",
-                config.python_release_tag
-            ),
+            "--runtime-python-release / RUNTIME_PYTHON_RELEASE is no longer supported; remove it and use --runtime-python (a uv Python request), not a PBS release tag",
+        ));
+    }
+    if config
+        .python_request
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(RuntimeInstallError::new(
+            RuntimeErrorCode::ConfigInvalid,
+            "runtime Python request must not be empty",
         ));
     }
     if let Some(worker_version) = config.worker_yt_dlp_version.as_deref() {
@@ -316,172 +372,114 @@ fn resolve_plan(config: &RuntimeConfig) -> Result<RuntimePlan> {
 }
 
 fn resolve_plan_file(path: &Path, config: &RuntimeConfig) -> Result<RuntimePlan> {
-    let text = fs::read_to_string(path).map_err(|error| {
+    let value: JsonValue = serde_json::from_slice(&fs::read(path).map_err(|error| {
         RuntimeInstallError::new(
             RuntimeErrorCode::ConfigInvalid,
-            format!("failed to read runtime plan {}: {error}", path.display()),
+            format!("read plan {}: {error}", path.display()),
         )
-    })?;
-    let value: JsonValue = serde_json::from_str(&text).map_err(|error| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            format!("invalid runtime plan {}: {error}", path.display()),
-        )
-    })?;
-    if value.get("schema_version").and_then(JsonValue::as_i64) != Some(MANIFEST_SCHEMA_VERSION) {
+    })?)
+    .map_err(|error| RuntimeInstallError::new(RuntimeErrorCode::ConfigInvalid, error))?;
+    if value["schema_version"] != MANIFEST_SCHEMA_VERSION || value.get("python").is_some() {
+        return Err(RuntimeInstallError::new(RuntimeErrorCode::ConfigInvalid,
+            "runtime plan must use schema_version 2 without legacy python/PBS fields; retain the binary pin, optionally pin a wheel, and use --runtime-python plus uv-managed Python (or an externally provisioned interpreter)"));
+    }
+    if required_string(&value, "yt_dlp")? != config.yt_dlp_version {
         return Err(RuntimeInstallError::new(
             RuntimeErrorCode::ConfigInvalid,
-            "runtime plan schema_version must be 1",
+            "runtime plan yt_dlp does not match configured version",
         ));
     }
-
-    let yt_dlp_version = required_string(&value, "yt_dlp")?.to_owned();
-    if yt_dlp_version != config.yt_dlp_version {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            format!(
-                "runtime plan yt_dlp version {yt_dlp_version} does not match configured version {}",
-                config.yt_dlp_version
-            ),
-        ));
-    }
-    let python = value.get("python").ok_or_else(|| {
+    let entries = value["artifacts"].as_array().ok_or_else(|| {
         RuntimeInstallError::new(
             RuntimeErrorCode::ConfigInvalid,
-            "runtime plan is missing python",
+            "plan requires artifacts array",
         )
     })?;
-    let release_tag = required_string(python, "release_tag")?.to_owned();
-    if release_tag != config.python_release_tag {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            format!(
-                "runtime plan python release tag {release_tag} does not match configured tag {}",
-                config.python_release_tag
-            ),
-        ));
-    }
-    let python_version = required_string(python, "python_version")?.to_owned();
-    if !is_python_version(&python_version) {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            format!("invalid python version in runtime plan: {python_version}"),
-        ));
-    }
-    let expected_binary = binary_asset_name().ok_or_else(|| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            "unsupported binary platform",
-        )
-    })?;
-    let target = pbs_target().ok_or_else(|| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            "unsupported Python platform",
-        )
-    })?;
-    let expected_python =
-        format!("cpython-{python_version}+{release_tag}-{target}-install_only.tar.gz");
-    let expected_wheel = format!("yt_dlp-{yt_dlp_version}-py3-none-any.whl");
-
-    let values = value
-        .get("artifacts")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ConfigInvalid,
-                "runtime plan must contain an artifacts array",
-            )
-        })?;
-    let mut artifacts = Vec::with_capacity(values.len());
-    for value in values {
-        let name = required_string(value, "name")?;
-        let url = required_string(value, "url")?;
-        let sha256 = required_string(value, "sha256")?;
-        if !is_sha256_hex(sha256) {
+    let mut artifacts = Vec::new();
+    for entry in entries {
+        let name = required_string(entry, "name")?;
+        let kind = if Some(name) == binary_asset_name() {
+            ArtifactKind::Binary
+        } else if name == format!("yt_dlp-{}-py3-none-any.whl", config.yt_dlp_version) {
+            ArtifactKind::Wheel
+        } else {
             return Err(RuntimeInstallError::new(
                 RuntimeErrorCode::ConfigInvalid,
-                format!("runtime plan artifact {name} has an invalid sha256"),
+                format!("unsupported plan artifact {name}; PBS archives are no longer accepted"),
             ));
-        }
-        if !url.starts_with("https://") && !url.starts_with("file://") {
-            return Err(RuntimeInstallError::new(
-                RuntimeErrorCode::ConfigInvalid,
-                format!("runtime plan artifact {name} has an unsupported URL scheme"),
-            ));
-        }
-        let kind = artifact_kind(name).ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ConfigInvalid,
-                format!("runtime plan artifact is not supported on this platform: {name}"),
-            )
-        })?;
-        let expected_name = match kind {
-            ArtifactKind::Binary => expected_binary,
-            ArtifactKind::Python => &expected_python,
-            ArtifactKind::Wheel => &expected_wheel,
         };
-        if name != expected_name {
+        let url = required_string(entry, "url")?;
+        let sha256 = required_string(entry, "sha256")?;
+        if !is_sha256_hex(sha256) || !(url.starts_with("https://") || url.starts_with("file://")) {
             return Err(RuntimeInstallError::new(
                 RuntimeErrorCode::ConfigInvalid,
-                format!("runtime plan artifact {name} does not match {expected_name}"),
+                "artifact requires SHA-256 and https:// or file:// URL",
             ));
         }
-        artifacts.push(make_plan_artifact(kind, name, url, sha256, config));
+        if artifacts
+            .iter()
+            .any(|artifact: &ResolvedArtifact| artifact.kind == kind)
+        {
+            return Err(RuntimeInstallError::new(
+                RuntimeErrorCode::ConfigInvalid,
+                "duplicate plan artifact kind",
+            ));
+        }
+        artifacts.push(ResolvedArtifact {
+            name: name.into(),
+            kind,
+            source: if kind == ArtifactKind::Binary {
+                SourceChannel::GithubRelease
+            } else {
+                SourceChannel::PyPI
+            },
+            resolved_tag: config.yt_dlp_version.clone(),
+            url: url.into(),
+            sha256: sha256.to_ascii_lowercase(),
+        });
     }
-    if artifacts.len() != 3
-        || !artifacts
-            .iter()
-            .any(|artifact| artifact.kind == ArtifactKind::Binary)
-        || !artifacts
-            .iter()
-            .any(|artifact| artifact.kind == ArtifactKind::Python)
-        || !artifacts
-            .iter()
-            .any(|artifact| artifact.kind == ArtifactKind::Wheel)
-    {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            "runtime plan must contain exactly one binary, python, and wheel artifact",
-        ));
-    }
-    artifacts.sort_by_key(|artifact| match artifact.kind {
-        ArtifactKind::Binary => 0,
-        ArtifactKind::Python => 1,
-        ArtifactKind::Wheel => 2,
+    artifacts.sort_by_key(|artifact| {
+        if artifact.kind == ArtifactKind::Binary {
+            0
+        } else {
+            1
+        }
     });
-
-    Ok(RuntimePlan {
-        yt_dlp_version,
-        python_release_tag: release_tag,
-        python_version,
-        artifacts,
-    })
+    let mut plan = new_plan(config, artifacts);
+    plan.artifact(ArtifactKind::Binary)?;
+    plan.offline = value
+        .get("offline")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                RuntimeInstallError::new(RuntimeErrorCode::ConfigInvalid, "offline must be boolean")
+            })
+        })
+        .transpose()?
+        .unwrap_or(false);
+    plan.wheelhouse = value
+        .get("wheelhouse")
+        .map(|_| required_string(&value, "wheelhouse").map(PathBuf::from))
+        .transpose()?;
+    if let Some(wheelhouse) = &plan.wheelhouse {
+        if !wheelhouse.is_absolute() {
+            return Err(RuntimeInstallError::new(
+                RuntimeErrorCode::ConfigInvalid,
+                "wheelhouse must be an absolute directory path",
+            ));
+        }
+    }
+    Ok(plan)
 }
 
-fn make_plan_artifact(
-    kind: ArtifactKind,
-    name: &str,
-    url: &str,
-    sha256: &str,
-    config: &RuntimeConfig,
-) -> ResolvedArtifact {
-    let resolved_tag = match kind {
-        ArtifactKind::Binary | ArtifactKind::Wheel => config.yt_dlp_version.clone(),
-        ArtifactKind::Python => config.python_release_tag.clone(),
-    };
-    let source = match kind {
-        ArtifactKind::Binary => SourceChannel::GithubRelease,
-        ArtifactKind::Python => SourceChannel::PythonBuildStandalone,
-        ArtifactKind::Wheel => SourceChannel::PyPI,
-    };
-    ResolvedArtifact {
-        name: name.to_owned(),
-        kind,
-        source,
-        resolved_tag,
-        url: url.to_owned(),
-        sha256: sha256.to_ascii_lowercase(),
+fn new_plan(config: &RuntimeConfig, artifacts: Vec<ResolvedArtifact>) -> RuntimePlan {
+    RuntimePlan {
+        yt_dlp_version: config.yt_dlp_version.clone(),
+        python_request: config.python_request.clone(),
+        artifacts,
+        offline: false,
+        wheelhouse: None,
+        environment: JsonValue::Null,
+        uv_path: config.uv_path.clone(),
     }
 }
 
@@ -489,72 +487,16 @@ fn resolve_live_plan(config: &RuntimeConfig) -> Result<RuntimePlan> {
     let binary_name = binary_asset_name().ok_or_else(|| {
         RuntimeInstallError::new(
             RuntimeErrorCode::ConfigInvalid,
-            "unsupported platform for the yt-dlp binary artifact",
+            "unsupported yt-dlp binary platform",
         )
     })?;
-    let target = pbs_target().ok_or_else(|| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            "unsupported platform for the python-build-standalone artifact",
-        )
-    })?;
-    let python_version = resolve_live_python_version(&config.python_release_tag, target)?;
-    let python_name = format!(
-        "cpython-{}+{}-{}-install_only.tar.gz",
-        python_version, config.python_release_tag, target
-    );
-    let wheel_name = format!("yt_dlp-{}-py3-none-any.whl", config.yt_dlp_version);
-
     let binary = github_release_artifact(
         "yt-dlp/yt-dlp",
         &config.yt_dlp_version,
         binary_name,
         ArtifactKind::Binary,
     )?;
-    let python = github_release_artifact(
-        "astral-sh/python-build-standalone",
-        &config.python_release_tag,
-        &python_name,
-        ArtifactKind::Python,
-    )?;
-    let wheel = pypi_wheel_artifact(&config.yt_dlp_version, &wheel_name)?;
-
-    Ok(RuntimePlan {
-        yt_dlp_version: config.yt_dlp_version.clone(),
-        python_release_tag: config.python_release_tag.clone(),
-        python_version,
-        artifacts: vec![binary, python, wheel],
-    })
-}
-
-fn resolve_live_python_version(release_tag: &str, target: &str) -> Result<String> {
-    let body = curl_to_memory(
-        &format!(
-            "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{release_tag}"
-        ),
-        64 * 1024 * 1024,
-    )?;
-    let value: JsonValue = parse_json(&body, "python-build-standalone release API")?;
-    let suffix = format!("+{release_tag}-{target}-install_only.tar.gz");
-    let versions: Vec<_> = value
-        .get("assets")
-        .and_then(JsonValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|asset| {
-            let name = asset.get("name").and_then(JsonValue::as_str)?;
-            let version = name.strip_prefix("cpython-")?.strip_suffix(&suffix)?;
-            is_python_version(version).then_some(version)
-        })
-        .collect();
-    let version = match versions.as_slice() {
-        [version] => *version,
-        _ => return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            format!("python-build-standalone release {release_tag} has {} CPython assets for {target}; expected one", versions.len()),
-        )),
-    };
-    Ok(version.to_owned())
+    Ok(new_plan(config, vec![binary]))
 }
 
 fn release_asset<'a>(assets: &'a [JsonValue], name: &str) -> Result<&'a JsonValue> {
@@ -641,7 +583,6 @@ fn github_release_artifact(
         kind,
         source: match kind {
             ArtifactKind::Binary => SourceChannel::GithubRelease,
-            ArtifactKind::Python => SourceChannel::PythonBuildStandalone,
             ArtifactKind::Wheel => SourceChannel::PyPI,
         },
         resolved_tag: release_tag.to_owned(),
@@ -684,106 +625,29 @@ fn parse_sums_sha256(body: &[u8], asset_name: &str) -> Result<String> {
     ))
 }
 
-fn pypi_wheel_artifact(version: &str, expected_name: &str) -> Result<ResolvedArtifact> {
-    let body = curl_to_memory(
-        &format!("https://pypi.org/pypi/yt-dlp/{version}/json"),
-        64 * 1024 * 1024,
-    )?;
-    let value: JsonValue = parse_json(&body, "PyPI JSON API")?;
-    let wheels = value
-        .pointer("/urls")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                "PyPI JSON API response has no urls array",
-            )
-        })?
-        .iter()
-        .filter(|item| {
-            item.get("packagetype").and_then(JsonValue::as_str) == Some("bdist_wheel")
-                && item
-                    .get("filename")
-                    .and_then(JsonValue::as_str)
-                    .is_some_and(|name| name.ends_with("-py3-none-any.whl"))
-        })
-        .collect::<Vec<_>>();
-    if wheels.len() != 1 {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            format!(
-                "PyPI has {} py3-none-any wheels for yt-dlp {version}",
-                wheels.len()
-            ),
-        ));
-    }
-    let wheel = wheels[0];
-    let name = wheel
-        .get("filename")
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                "PyPI JSON API response has no wheel filename",
-            )
-        })?;
-    let url = wheel.get("url").and_then(metadata_url).ok_or_else(|| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            "PyPI JSON API response has no wheel URL",
-        )
-    })?;
-    let sha256 = wheel
-        .pointer("/digests/sha256")
-        .and_then(JsonValue::as_str)
-        .filter(|digest| is_sha256_hex(digest))
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                "PyPI JSON API response has no usable wheel sha256",
-            )
-        })?;
-    if name != expected_name {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            format!("PyPI wheel {name} does not match expected artifact {expected_name}"),
-        ));
-    }
-
-    Ok(ResolvedArtifact {
-        name: name.to_owned(),
-        kind: ArtifactKind::Wheel,
-        source: SourceChannel::PyPI,
-        resolved_tag: version.to_owned(),
-        url: url.to_owned(),
-        sha256,
+fn request_identity(plan: &RuntimePlan) -> JsonValue {
+    json!({
+        "yt_dlp": plan.yt_dlp_version,
+        "python_request": plan.python_request,
+        "offline": plan.offline,
+        "wheelhouse": plan.wheelhouse,
+        "artifacts": plan.artifacts.iter().map(artifact_identity_json).collect::<Vec<_>>(),
     })
 }
 
 fn derive_runtime_id(plan: &RuntimePlan, worker_hash: &str) -> Result<String> {
     let identity = json!({
         "schema_version": MANIFEST_SCHEMA_VERSION,
+        "request": request_identity(plan),
+        "environment": plan.environment,
         "worker_script_sha256": worker_hash,
-        "artifacts": plan
-            .artifacts
-            .iter()
-            .map(artifact_identity_json)
-            .collect::<Vec<_>>(),
     });
-    let bytes = serde_json::to_vec(&identity).map_err(|error| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ConfigInvalid,
-            format!("failed to serialize runtime identity: {error}"),
-        )
-    })?;
-    let digest = sha256_hex(&bytes);
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|error| RuntimeInstallError::new(RuntimeErrorCode::ConfigInvalid, error))?;
     Ok(format!(
-        "yt-dlp-{}-py{}-pbs{}-{}",
-        normalize_yt_dlp_version(&plan.yt_dlp_version),
-        plan.python_version,
-        plan.python_release_tag,
-        &digest[..8]
+        "yt-dlp-{}-uv-{}",
+        plan.yt_dlp_version,
+        &sha256_hex(&bytes)[..16]
     ))
 }
 
@@ -797,11 +661,8 @@ fn artifact_identity_json(artifact: &ResolvedArtifact) -> JsonValue {
     })
 }
 
-fn normalize_yt_dlp_version(value: &str) -> String {
-    value.trim().to_ascii_lowercase()
-}
-
 fn validate_runtime(
+    root: &Path,
     directory: &Path,
     plan: &RuntimePlan,
     runtime_id: &str,
@@ -820,36 +681,71 @@ fn validate_runtime(
         &directory.join("bin").join(binary_name),
         &plan.artifact(ArtifactKind::Binary)?.sha256,
     )?;
-    let paths = runtime_paths(directory, runtime_id, binary_name);
+    let mut paths = runtime_paths(directory, runtime_id, binary_name);
     verify_required_paths(directory, &paths)?;
+    let observed =
+        probe_environment(root, directory, &plan.yt_dlp_version).map_err(|mut error| {
+            if error.cleanup_safe {
+                error.code = RuntimeErrorCode::IntegrityFailure;
+            }
+            error
+        })?;
+    if observed != plan.environment {
+        return Err(RuntimeInstallError::new(
+            RuntimeErrorCode::IntegrityFailure,
+            "installed interpreter/distribution identity changed",
+        ));
+    }
+    paths.python_path_entries = observed["site_packages"]
+        .as_array()
+        .ok_or_else(|| {
+            RuntimeInstallError::new(
+                RuntimeErrorCode::IntegrityFailure,
+                "probe omitted venv package paths",
+            )
+        })?
+        .iter()
+        .map(|entry| {
+            let relative = entry.as_str().ok_or_else(|| {
+                RuntimeInstallError::new(
+                    RuntimeErrorCode::IntegrityFailure,
+                    "invalid venv package path",
+                )
+            })?;
+            let path = directory.join(relative);
+            if !path.starts_with(directory.join("python")) || !path.is_dir() {
+                return Err(RuntimeInstallError::new(
+                    RuntimeErrorCode::IntegrityFailure,
+                    "venv package path escapes installation",
+                ));
+            }
+            Ok(path)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(paths)
 }
 
 fn verify_required_paths(directory: &Path, paths: &RuntimePaths) -> Result<()> {
     for path in [
-        paths.python_path.clone(),
-        paths.python_path_entries[0]
-            .join("yt_dlp")
-            .join("__init__.py"),
-        paths.python_path_entries[0]
-            .join("yt_dlp")
-            .join("version.py"),
+        &paths.binary_path,
+        &paths.worker_path,
+        &directory.join("python/pyvenv.cfg"),
     ] {
-        let resolved = fs::canonicalize(&path).map_err(|error| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::IntegrityFailure,
-                format!("required runtime path {}: {error}", path.display()),
-            )
-        })?;
+        let resolved = fs::canonicalize(path)
+            .map_err(|error| RuntimeInstallError::new(RuntimeErrorCode::IntegrityFailure, error))?;
         if !resolved.starts_with(directory) || !resolved.is_file() {
             return Err(RuntimeInstallError::new(
                 RuntimeErrorCode::IntegrityFailure,
-                format!(
-                    "required runtime file is missing or escapes installation: {}",
-                    path.display()
-                ),
+                "required runtime file missing or escapes installation",
             ));
         }
+    }
+    // The venv interpreter may link to a stable uv base outside runtime/.
+    if !paths.python_path.is_file() {
+        return Err(RuntimeInstallError::new(
+            RuntimeErrorCode::IntegrityFailure,
+            "venv interpreter is missing",
+        ));
     }
     Ok(())
 }
@@ -882,7 +778,7 @@ fn verify_manifest(
     if manifest.get("schema_version").and_then(JsonValue::as_i64) != Some(MANIFEST_SCHEMA_VERSION) {
         return Err(RuntimeInstallError::new(
             RuntimeErrorCode::IntegrityFailure,
-            "runtime manifest schema_version is not 1",
+            "runtime manifest schema_version is not 2",
         ));
     }
     if manifest.get("runtime_id").and_then(JsonValue::as_str) != Some(runtime_id) {
@@ -901,15 +797,14 @@ fn verify_manifest(
             "runtime manifest platform does not match this host",
         ));
     }
-    let expected_versions = json!({
-        "yt_dlp": plan.yt_dlp_version,
-        "python": plan.python_version,
-        "python_release_tag": plan.python_release_tag,
-    });
-    if manifest.get("versions") != Some(&expected_versions) {
+    let recorded: RuntimePlan = serde_json::from_value(manifest["plan"].clone())
+        .map_err(|error| RuntimeInstallError::new(RuntimeErrorCode::IntegrityFailure, error))?;
+    if request_identity(&recorded) != request_identity(plan)
+        || recorded.environment != plan.environment
+    {
         return Err(RuntimeInstallError::new(
             RuntimeErrorCode::IntegrityFailure,
-            "runtime manifest versions do not match the requested runtime",
+            "runtime manifest plan does not match requested runtime",
         ));
     }
     if manifest
@@ -968,15 +863,15 @@ fn artifact_entry_matches(entry: &JsonValue, expected: &JsonValue) -> bool {
 
 fn runtime_paths(directory: &Path, runtime_id: &str, binary_name: &str) -> RuntimePaths {
     let python_path = if cfg!(windows) {
-        directory.join("python").join("python.exe")
+        directory.join("python").join("Scripts").join("python.exe")
     } else {
-        directory.join("python").join("bin").join("python3")
+        directory.join("python").join("bin").join("python")
     };
     RuntimePaths {
         binary_path: directory.join("bin").join(binary_name),
         python_path,
         worker_path: directory.join("worker").join(WORKER_SCRIPT_NAME),
-        python_path_entries: vec![directory.join("python").join("site-packages")],
+        python_path_entries: Vec::new(),
         runtime_id: runtime_id.to_owned(),
     }
 }
@@ -1258,19 +1153,6 @@ fn prepare_staging(staging: &Path, plan: &RuntimePlan, worker_script: &[u8]) -> 
     })?;
     verify_file(&binary_path, &binary.sha256)?;
 
-    let python = plan.artifact(ArtifactKind::Python)?;
-    extract_tar(&artifacts_dir.join(&python.name), staging)?;
-
-    let wheel = plan.artifact(ArtifactKind::Wheel)?;
-    let site_packages = staging.join("python").join("site-packages");
-    fs::create_dir_all(&site_packages).map_err(|error| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::StagingFailure,
-            format!("failed to create site-packages: {error}"),
-        )
-    })?;
-    extract_zip(&artifacts_dir.join(&wheel.name), &site_packages)?;
-
     let worker_dir = staging.join("worker");
     fs::create_dir_all(&worker_dir).map_err(|error| {
         RuntimeInstallError::new(
@@ -1287,9 +1169,148 @@ fn prepare_staging(staging: &Path, plan: &RuntimePlan, worker_script: &[u8]) -> 
     })?;
     verify_file(&worker_path, &sha256_hex(worker_script))?;
 
-    make_binaries_executable(staging, binary_name)?;
-    verify_required_paths(staging, &runtime_paths(staging, "", binary_name))?;
+    set_executable(&binary_path)?;
     Ok(())
+}
+
+fn uv_command(root: &Path, plan: &RuntimePlan) -> Command {
+    let mut command = Command::new(&plan.uv_path);
+    // Ambient uv flags must not weaken dependency resolution or redirect writes.
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("UV_")
+        {
+            command.env_remove(key);
+        }
+    }
+    command
+        .args(["--no-config", "--no-progress", "--color", "never"])
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("CONDA_PREFIX")
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME")
+        .env("UV_PYTHON_INSTALL_DIR", root.join("uv-python"))
+        .env("UV_CACHE_DIR", root.join("uv-cache"))
+        .current_dir(root);
+    if plan.offline {
+        command.arg("--offline");
+    }
+    command
+}
+
+fn run_uv(command: Command) -> Result<()> {
+    let output = command_output(
+        command,
+        RuntimeErrorCode::UvMissing,
+        RuntimeErrorCode::EnvironmentFailure,
+    )?;
+    if !output.status.success() {
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        let diagnostic: String = diagnostic.chars().take(8192).collect();
+        return Err(RuntimeInstallError::new(RuntimeErrorCode::EnvironmentFailure,
+            format!("uv failed with exit status {:?}: {diagnostic}; check the explicit yt-dlp pin, offline inputs and --runtime-python compatibility. uv does not search alternative Python versions to satisfy package requirements; no automatic fallback was attempted", output.status.code())));
+    }
+    Ok(())
+}
+
+fn prepare_environment(
+    root: &Path,
+    staging: &Path,
+    plan: &RuntimePlan,
+    preferred: Option<&Path>,
+) -> Result<()> {
+    for name in ["uv-python", "uv-cache"] {
+        let path = root.join(name);
+        if inspect_directory(&path, root)?.is_none() {
+            fs::create_dir(&path).map_err(|error| {
+                RuntimeInstallError::new(RuntimeErrorCode::StagingFailure, error)
+            })?;
+        }
+        inspect_directory(&path, root)?;
+    }
+    let mut venv = uv_command(root, plan);
+    venv.args(["venv", "--no-project", "--relocatable"]);
+    if let Some(preferred) = preferred {
+        venv.arg("--python")
+            .arg(preferred)
+            .arg("--no-python-downloads");
+    } else if let Some(request) = &plan.python_request {
+        venv.arg("--python").arg(request);
+    } else {
+        // uv owns the default interpreter policy. This is not a dependency solver.
+        venv.arg("--managed-python").args(["--python", "cpython"]);
+    }
+    venv.arg(staging.join("python"));
+    run_uv(venv)?;
+    let python = runtime_paths(staging, "", installed_binary_name()).python_path;
+    let mut install = uv_command(root, plan);
+    install
+        .args(["pip", "install", "--python"])
+        .arg(&python)
+        .args(["--no-python-downloads", "--no-build", "--link-mode", "copy"])
+        .arg(format!("yt-dlp=={}", plan.yt_dlp_version));
+    if let Some(wheel) = plan
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == ArtifactKind::Wheel)
+    {
+        install.arg(staging.join(ARTIFACTS_DIR).join(&wheel.name));
+    }
+    if plan.offline {
+        install.arg("--no-index");
+    }
+    if let Some(wheelhouse) = &plan.wheelhouse {
+        install.arg("--find-links").arg(wheelhouse);
+    }
+    run_uv(install)?;
+    let mut check = uv_command(root, plan);
+    check.args(["pip", "check", "--python"]).arg(python);
+    run_uv(check)
+}
+
+fn probe_environment(root: &Path, directory: &Path, version: &str) -> Result<JsonValue> {
+    let python = runtime_paths(directory, "", installed_binary_name()).python_path;
+    let mut command = Command::new(python);
+    command
+        .args(["-I", "-B", "-c", ENVIRONMENT_PROBE])
+        .arg(directory)
+        .arg(version)
+        .arg(root);
+    let output = command_output(
+        command,
+        RuntimeErrorCode::EnvironmentFailure,
+        RuntimeErrorCode::EnvironmentFailure,
+    )?;
+    if !output.status.success() {
+        return Err(RuntimeInstallError::new(
+            RuntimeErrorCode::EnvironmentFailure,
+            format!(
+                "Python environment probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+    let value = parse_json(&output.stdout, "Python environment probe")?;
+    for key in [
+        "implementation",
+        "python_version",
+        "base_executable",
+        "base_prefix",
+        "interpreter_sha256",
+        "yt_dlp_module_version",
+        "yt_dlp_distribution_version",
+    ] {
+        required_string(&value, key)?;
+    }
+    if !value["packages"].is_array() {
+        return Err(RuntimeInstallError::new(
+            RuntimeErrorCode::EnvironmentFailure,
+            "probe omitted installed distributions",
+        ));
+    }
+    Ok(value)
 }
 
 fn fetch_to_file(artifact: &ResolvedArtifact, destination: &Path) -> Result<()> {
@@ -1478,7 +1499,7 @@ fn command_output(
     let child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| {
             let code = if error.kind() == std::io::ErrorKind::NotFound {
@@ -1517,119 +1538,6 @@ fn parse_json(bytes: &[u8], source: &'static str) -> Result<JsonValue> {
             format!("invalid JSON response from {source}: {error}"),
         )
     })
-}
-
-fn extract_tar(archive: &Path, destination: &Path) -> Result<()> {
-    let program = if cfg!(windows) { "tar.exe" } else { "tar" };
-    let mut command = Command::new(program);
-    command
-        .args(["-xzf"])
-        .arg(archive)
-        .arg("-C")
-        .arg(destination);
-    if cfg!(unix) {
-        command.arg("--no-same-owner");
-    }
-    run_command(
-        command,
-        RuntimeErrorCode::CurlMissing,
-        RuntimeErrorCode::ExtractFailure,
-    )?;
-    Ok(())
-}
-
-fn extract_zip(archive: &Path, destination: &Path) -> Result<()> {
-    let file = File::open(archive).map_err(|error| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ExtractFailure,
-            format!("failed to open wheel {}: {error}", archive.display()),
-        )
-    })?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|error| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ExtractFailure,
-            format!("failed to read wheel {}: {error}", archive.display()),
-        )
-    })?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ExtractFailure,
-                format!("failed to read wheel entry: {error}"),
-            )
-        })?;
-        let Some(relative) = entry.enclosed_name() else {
-            return Err(RuntimeInstallError::new(
-                RuntimeErrorCode::ExtractFailure,
-                format!("unsafe wheel entry path: {}", entry.name()),
-            ));
-        };
-        let output_path = destination.join(relative);
-        if entry.is_dir() {
-            fs::create_dir_all(&output_path).map_err(|error| {
-                RuntimeInstallError::new(
-                    RuntimeErrorCode::ExtractFailure,
-                    format!("failed to create wheel directory: {error}"),
-                )
-            })?;
-            continue;
-        }
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                RuntimeInstallError::new(
-                    RuntimeErrorCode::ExtractFailure,
-                    format!("failed to create wheel parent directory: {error}"),
-                )
-            })?;
-        }
-        let mut output = File::create(&output_path).map_err(|error| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ExtractFailure,
-                format!(
-                    "failed to create wheel entry {}: {error}",
-                    output_path.display()
-                ),
-            )
-        })?;
-        std::io::copy(&mut entry, &mut output).map_err(|error| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ExtractFailure,
-                format!(
-                    "failed to extract wheel entry {}: {error}",
-                    output_path.display()
-                ),
-            )
-        })?;
-    }
-    Ok(())
-}
-
-fn make_binaries_executable(staging: &Path, binary_name: &str) -> Result<()> {
-    if cfg!(windows) {
-        return Ok(());
-    }
-    let binary = staging.join("bin").join(binary_name);
-    if binary.is_file() {
-        set_executable(&binary)?;
-    }
-    let python_bin = staging.join("python").join("bin");
-    if python_bin.is_dir() {
-        for entry in fs::read_dir(&python_bin).map_err(|error| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::PermissionFailure,
-                format!("failed to read python bin directory: {error}"),
-            )
-        })? {
-            let entry = entry.map_err(|error| {
-                RuntimeInstallError::new(
-                    RuntimeErrorCode::PermissionFailure,
-                    format!("failed to read python bin entry: {error}"),
-                )
-            })?;
-            set_executable(&entry.path())?;
-        }
-    }
-    Ok(())
 }
 
 fn set_executable(path: &Path) -> Result<()> {
@@ -1702,13 +1610,15 @@ fn publish(
     sync_directory(&staging.root, "root-sync", "candidate")?;
     #[cfg(test)]
     tests::after_rename(destination);
-    validate_runtime(destination, plan, runtime_id, worker_hash).map_err(|mut error| {
-        error.message = format!(
-            "phase=post-publication runtime_state=candidate: {}",
-            error.message
-        );
-        error
-    })
+    validate_runtime(&staging.root, destination, plan, runtime_id, worker_hash).map_err(
+        |mut error| {
+            error.message = format!(
+                "phase=post-publication runtime_state=candidate: {}",
+                error.message
+            );
+            error
+        },
+    )
 }
 
 fn write_manifest(
@@ -1739,11 +1649,7 @@ fn write_manifest(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "runtime_id": runtime_id,
         "platform": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
-        "versions": {
-            "yt_dlp": plan.yt_dlp_version,
-            "python": plan.python_version,
-            "python_release_tag": plan.python_release_tag,
-        },
+        "plan": plan,
         "worker_script_sha256": worker_hash,
         "artifacts": artifacts,
     });
@@ -1796,46 +1702,11 @@ fn metadata_url(value: &JsonValue) -> Option<&str> {
     })
 }
 
-fn is_numeric_release_tag(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-fn is_python_version(value: &str) -> bool {
-    let mut components = value.split('.');
-    let mut count = 0;
-    for component in components.by_ref() {
-        if component.is_empty() || !component.bytes().all(|byte| byte.is_ascii_digit()) {
-            return false;
-        }
-        count += 1;
-    }
-    count == 3
-}
-
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| {
             byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte)
         })
-}
-
-fn artifact_kind(name: &str) -> Option<ArtifactKind> {
-    if name == "yt-dlp.exe"
-        || name == "yt-dlp_x86.exe"
-        || name == "yt-dlp_linux"
-        || name == "yt-dlp_linux_armv7l"
-        || name == "yt-dlp_linux_aarch64"
-        || name == "yt-dlp_macos"
-    {
-        return Some(ArtifactKind::Binary);
-    }
-    if name.starts_with("cpython-") && name.ends_with("-install_only.tar.gz") {
-        return Some(ArtifactKind::Python);
-    }
-    if name.starts_with("yt_dlp-") && name.ends_with("-py3-none-any.whl") {
-        return Some(ArtifactKind::Wheel);
-    }
-    None
 }
 
 fn binary_asset_name() -> Option<&'static str> {
@@ -1855,19 +1726,6 @@ fn installed_binary_name() -> &'static str {
         "yt-dlp.exe"
     } else {
         "yt-dlp"
-    }
-}
-
-fn pbs_target() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86") => Some("i686-pc-windows-msvc"),
-        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
-        ("linux", "arm") => Some("armv7-unknown-linux-gnueabihf"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
-        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
-        _ => None,
     }
 }
 
@@ -1902,6 +1760,13 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
+    mod managed {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/managed_runtime.rs"
+        ));
+    }
+
     #[derive(Default)]
     struct Injections {
         commands: Option<VecDeque<Reply>>,
@@ -1912,6 +1777,7 @@ mod tests {
 
     enum Reply {
         Output { body: Vec<u8>, exit: i32 },
+        Execute,
         Missing,
         Writer,
         OversizeArtifact,
@@ -1982,6 +1848,7 @@ mod tests {
                     .collect(),
             );
             match reply {
+                Reply::Execute => None,
                 Reply::PartialDownloadFailure => {
                     let args: Vec<_> = command.get_args().collect();
                     let destination =
@@ -2064,7 +1931,7 @@ mod tests {
                 }
                 Reply::Writer => {
                     let args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
-                    let destination = &args[args.iter().position(|arg| arg == "-C").unwrap() + 1];
+                    let destination = Path::new(args.last().unwrap()).parent().unwrap();
                     *command = Command::new(std::env::current_exe().unwrap());
                     command
                         .args([
@@ -2103,51 +1970,23 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let source = directory.path().join("source");
             fs::create_dir(&source).unwrap();
-            let tree = directory.path().join("python");
-            fs::create_dir_all(tree.join("bin")).unwrap();
-            fs::write(tree.join("python.exe"), b"python").unwrap();
-            fs::write(tree.join("bin/python3"), b"python").unwrap();
             let binary = binary_asset_name().unwrap();
-            let python = format!(
-                "cpython-3.13.18+20261026-{}-install_only.tar.gz",
-                pbs_target().unwrap()
-            );
             let wheel = "yt_dlp-2026.09.23-py3-none-any.whl";
             fs::write(source.join(binary), b"binary").unwrap();
-            let mut tar = Command::new("tar");
-            tar.arg("-czf")
-                .arg(source.join(&python))
-                .arg("-C")
-                .arg(directory.path())
-                .arg("python");
-            run_command(
-                tar,
-                RuntimeErrorCode::CurlMissing,
-                RuntimeErrorCode::ExtractFailure,
-            )
-            .unwrap();
-            let mut zip = zip::ZipWriter::new(File::create(source.join(wheel)).unwrap());
-            for name in ["yt_dlp/__init__.py", "yt_dlp/version.py"] {
-                zip.start_file(
-                    name,
-                    zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated),
-                )
-                .unwrap();
-                zip.write_all(b"__version__ = '2026.09.23'\n").unwrap();
-            }
-            zip.finish().unwrap();
-            let artifacts: Vec<_> = [binary, &python, wheel].iter().map(|name| {
+            managed::wheel(&source.join(wheel), "2026.09.23", ">=3.10", "");
+            let artifacts: Vec<_> = [binary, wheel].iter().map(|name| {
                 let path = source.join(name);
-                json!({"name": name, "url": format!("file:///{}", path.to_string_lossy().replace('\\', "/").trim_start_matches('/')), "sha256": sha256_hex(&fs::read(path).unwrap())})
+                json!({"name": name, "url": managed::file_url(&path), "sha256": managed::hash(&path)})
             }).collect();
             let path = directory.path().join("plan.json");
-            fs::write(&path, json!({"schema_version": 1, "yt_dlp": "2026.09.23", "python": {"release_tag": "20261026", "python_version": "3.13.18"}, "artifacts": artifacts}).to_string()).unwrap();
+            fs::write(&path, json!({"schema_version": 2, "offline": true, "yt_dlp": "2026.09.23", "artifacts": artifacts}).to_string()).unwrap();
             let config = RuntimeConfig {
                 libs_dir: directory.path().join("libs"),
                 plan_path: Some(path),
                 yt_dlp_version: "2026.09.23".into(),
-                python_release_tag: "20261026".into(),
+                python_release_tag: None,
+                python_request: Some(managed::host_python()),
+                uv_path: "uv".into(),
                 worker_yt_dlp_version: None,
             };
             Self { directory, config }
@@ -2195,11 +2034,16 @@ mod tests {
     fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
         fn visit(root: &Path, path: &Path, result: &mut Vec<SnapshotEntry>) {
             let metadata = fs::symlink_metadata(path).unwrap();
-            assert!(!is_link(&metadata));
             result.push(SnapshotEntry(
                 path.strip_prefix(root).unwrap().to_owned(),
                 metadata.is_dir(),
-                if metadata.is_dir() {
+                if is_link(&metadata) {
+                    fs::read_link(path)
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_bytes()
+                        .to_vec()
+                } else if metadata.is_dir() {
                     Vec::new()
                 } else {
                     fs::read(path).unwrap()
@@ -2221,25 +2065,61 @@ mod tests {
 
     #[test]
     fn embedded_worker_identity_replaces_same_path_and_disarms_guard() {
-        let fixture = Fixture::new();
+        let mut fixture = Fixture::new();
+        fixture.config.libs_dir = fixture.directory.path().join("staging");
         let first = fixture.install(WORKER_SCRIPT);
         let installed = fixture.root().join("runtime");
         fs::write(installed.join("old-only"), b"old").unwrap();
-        let worker = b"different embedded build";
+        let worker = b"# different embedded build\n";
+        // Record the existing offline update's real uv/probe commands, without
+        // replacing their output or provisioning a managed interpreter.
+        let reset = inject(Some((0..7).map(|_| Reply::Execute).collect()), vec![]);
         let second = fixture.install(worker);
+        INJECTIONS.with(|state| {
+            let state = state.borrow();
+            let probes: Vec<_> = state
+                .calls
+                .iter()
+                .filter(|args| args.get(3).is_some_and(|arg| arg == ENVIRONMENT_PROBE))
+                .collect();
+            assert_eq!(probes.len(), 4);
+            for args in &probes {
+                assert_eq!(args.len(), 7);
+                assert_eq!(&args[..3], ["-I", "-B", "-c"]);
+                assert_eq!(args[5], fixture.config.yt_dlp_version);
+                assert_eq!(Path::new(&args[6]), fixture.root());
+            }
+            assert_eq!(Path::new(&probes[0][4]), installed);
+            assert_eq!(
+                Path::new(&probes[1][4]).parent().unwrap(),
+                fixture.root().join("staging")
+            );
+            assert_eq!(probes[1][4], probes[2][4]);
+            assert_eq!(Path::new(&probes[3][4]), installed);
+        });
+        assert_consumed();
+        drop(reset);
         assert_ne!(first.runtime_id, second.runtime_id);
         assert_eq!(first.binary_path, second.binary_path);
         assert_eq!(first.python_path, second.python_path);
         assert_eq!(first.worker_path, second.worker_path);
         assert_eq!(first.python_path_entries, second.python_path_entries);
-        let plan = resolve_plan(&fixture.config).unwrap();
+        let plan: RuntimePlan =
+            serde_json::from_value(read_manifest(&installed).unwrap()["plan"].clone()).unwrap();
         assert_eq!(
-            validate_runtime(&installed, &plan, &second.runtime_id, &sha256_hex(worker)).unwrap(),
+            validate_runtime(
+                &fixture.root(),
+                &installed,
+                &plan,
+                &second.runtime_id,
+                &sha256_hex(worker),
+            )
+            .unwrap(),
             second
         );
         assert_eq!(fs::read(&second.worker_path).unwrap(), worker);
         assert!(!installed.join("old-only").exists());
-        assert_eq!(fs::read_dir(fixture.root()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(fixture.root()).unwrap().count(), 4);
         fixture.no_staging();
         let before = snapshot(&fixture.root());
         fs::rename(
@@ -2284,9 +2164,12 @@ mod tests {
                 }
                 "rename" => assert!(!installed.exists()),
                 "root-sync" => {
-                    let plan = resolve_plan(&fixture.config).unwrap();
+                    let plan: RuntimePlan =
+                        serde_json::from_value(read_manifest(&installed).unwrap()["plan"].clone())
+                            .unwrap();
                     let hash = sha256_hex(WORKER_SCRIPT);
                     validate_runtime(
+                        &fixture.root(),
                         &installed,
                         &plan,
                         &derive_runtime_id(&plan, &hash).unwrap(),
@@ -2326,11 +2209,13 @@ mod tests {
     fn successful_rename_disarms_cleanup_even_when_called_explicitly() {
         let fixture = Fixture::new();
         let root = install_root(&fixture.config.libs_dir).unwrap();
-        let plan = resolve_plan(&fixture.config).unwrap();
+        let mut plan = resolve_plan(&fixture.config).unwrap();
         let hash = sha256_hex(WORKER_SCRIPT);
-        let id = derive_runtime_id(&plan, &hash).unwrap();
         let mut staging = OwnedStaging::create(&root).unwrap();
         prepare_staging(&staging.path, &plan, WORKER_SCRIPT).unwrap();
+        prepare_environment(&root, &staging.path, &plan, None).unwrap();
+        plan.environment = probe_environment(&root, &staging.path, &plan.yt_dlp_version).unwrap();
+        let id = derive_runtime_id(&plan, &hash).unwrap();
         write_manifest(&staging.path, &plan, &id, &hash).unwrap();
         sync_directory(&staging.path, "candidate-sync", "absent").unwrap();
         let installed = root.join("runtime");
@@ -2341,7 +2226,7 @@ mod tests {
         drop(staging);
         assert_eq!(before, snapshot(&installed));
         assert_eq!(
-            validate_runtime(&installed, &plan, &id, &hash).unwrap(),
+            validate_runtime(&root, &installed, &plan, &id, &hash).unwrap(),
             paths
         );
         fixture.no_staging();
@@ -2352,10 +2237,12 @@ mod tests {
         let fixture = Fixture::new();
         let root = install_root(&fixture.config.libs_dir).unwrap();
         let mut staging = OwnedStaging::create(&root).unwrap();
-        let plan = resolve_plan(&fixture.config).unwrap();
+        let mut plan = resolve_plan(&fixture.config).unwrap();
         let hash = sha256_hex(WORKER_SCRIPT);
-        let id = derive_runtime_id(&plan, &hash).unwrap();
         prepare_staging(&staging.path, &plan, WORKER_SCRIPT).unwrap();
+        prepare_environment(&root, &staging.path, &plan, None).unwrap();
+        plan.environment = probe_environment(&root, &staging.path, &plan.yt_dlp_version).unwrap();
+        let id = derive_runtime_id(&plan, &hash).unwrap();
         write_manifest(&staging.path, &plan, &id, &hash).unwrap();
         let destination = root.join("runtime");
         fs::create_dir(&destination).unwrap();
@@ -2471,8 +2358,8 @@ mod tests {
         let staging = OwnedStaging::create(&root).unwrap();
         let plan = resolve_plan(&fixture.config).unwrap();
         let _reset = inject(Some(vec![Reply::Writer]), vec![]);
-        let error = prepare_staging(&staging.path, &plan, WORKER_SCRIPT).unwrap_err();
-        assert_eq!(error.code, RuntimeErrorCode::ExtractFailure);
+        let error = prepare_environment(&root, &staging.path, &plan, None).unwrap_err();
+        assert_eq!(error.code, RuntimeErrorCode::EnvironmentFailure);
         assert!(error.message.contains("exit status Some(7)"));
         assert!(error.cleanup_safe);
         assert_eq!(
@@ -2513,10 +2400,6 @@ mod tests {
             asset["digest"] = digest;
         }
         json!({"assets": [asset, {"name": "SHA2-256SUMS", "browser_download_url": "https://fixtures.invalid/SHA2-256SUMS"}]})
-    }
-
-    fn wheel_metadata() -> JsonValue {
-        json!({"urls": [{"filename": "yt_dlp-2026.09.23-py3-none-any.whl", "packagetype": "bdist_wheel", "url": "https://fixtures.invalid/wheel", "digests": {"sha256": "a".repeat(64)}}]})
     }
 
     fn unusable_digests() -> Vec<Option<JsonValue>> {
@@ -2565,16 +2448,6 @@ mod tests {
                 "b".repeat(64)
             );
             assert_consumed();
-            let _reset = inject(Some(vec![json_response(&metadata)]), vec![]);
-            let error = github_release_artifact(
-                "astral-sh/python-build-standalone",
-                "20261026",
-                name,
-                ArtifactKind::Python,
-            )
-            .unwrap_err();
-            assert_eq!(error.code, RuntimeErrorCode::ResolveFailure);
-            assert_consumed();
         }
         for body in [
             vec![0xff],
@@ -2622,7 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn release_and_python_metadata_fail_closed() {
+    fn release_metadata_fail_closed() {
         let name = binary_asset_name().unwrap();
         for index in [0, 1] {
             let mut metadata = release_metadata(name, None);
@@ -2690,146 +2563,116 @@ mod tests {
                 assert_consumed();
             }
         }
-        let target = pbs_target().unwrap();
-        let duplicate_pbs = json!({"assets": [
-            {"name": format!("cpython-3.13.18+20261026-{target}-install_only.tar.gz")},
-            {"name": format!("cpython-3.13.19+20261026-{target}-install_only.tar.gz")}
-        ]});
-        let _reset = inject(Some(vec![json_response(&duplicate_pbs)]), vec![]);
-        assert_eq!(
-            resolve_live_python_version("20261026", target)
-                .unwrap_err()
-                .code,
-            RuntimeErrorCode::ResolveFailure
-        );
-        assert_consumed();
-        for asset in [
-            json!({}),
-            json!({"name": 1}),
-            json!({"name": format!("cpython-bad+20261026-{target}-install_only.tar.gz")}),
-            json!({"name": format!("cpython-3.13.18+wrong-{target}-install_only.tar.gz")}),
-        ] {
-            let _reset = inject(
-                Some(vec![json_response(&json!({"assets": [asset]}))]),
-                vec![],
-            );
-            assert_eq!(
-                resolve_live_python_version("20261026", target)
-                    .unwrap_err()
-                    .code,
-                RuntimeErrorCode::ResolveFailure
-            );
-            assert_consumed();
-        }
-        let _reset = inject(Some(vec![response(b"not JSON", 200, 0)]), vec![]);
-        assert_eq!(
-            resolve_live_python_version("20261026", target)
-                .unwrap_err()
-                .code,
-            RuntimeErrorCode::ResolveFailure
-        );
     }
 
     #[test]
-    fn wheel_metadata_requires_one_exact_wheel_and_usable_digest() {
-        let expected = "yt_dlp-2026.09.23-py3-none-any.whl";
-        let base = wheel_metadata();
-        let mut cases = vec![
-            json!({}),
-            json!({"urls": null}),
-            json!({"urls": []}),
-            json!({"urls": [base["urls"][0].clone(), base["urls"][0].clone()]}),
-        ];
-        for digest in unusable_digests() {
-            let mut metadata = base.clone();
-            if let Some(digest) = digest {
-                metadata["urls"][0]["digests"]["sha256"] = digest;
-            } else {
-                metadata["urls"][0]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("digests");
-            }
-            cases.push(metadata);
-        }
-        for field in ["filename", "packagetype", "url"] {
-            let mut missing = base.clone();
-            missing["urls"][0].as_object_mut().unwrap().remove(field);
-            cases.push(missing);
-            for value in [JsonValue::Null, json!(8), json!(""), json!("wrong")] {
-                let mut metadata = base.clone();
-                metadata["urls"][0][field] = value;
-                cases.push(metadata);
-            }
-        }
-        let mut wrong_name = base.clone();
-        wrong_name["urls"][0]["filename"] = json!("yt_dlp-other-py3-none-any.whl");
-        cases.push(wrong_name);
-        for metadata in cases {
-            let _reset = inject(Some(vec![json_response(&metadata)]), vec![]);
-            assert_eq!(
-                pypi_wheel_artifact("2026.09.23", expected)
-                    .unwrap_err()
-                    .code,
-                RuntimeErrorCode::ResolveFailure,
-                "{metadata}"
-            );
-            assert_consumed();
-        }
-        let _reset = inject(Some(vec![json_response(&base)]), vec![]);
-        let wheel = pypi_wheel_artifact("2026.09.23", expected).unwrap();
-        assert_eq!(wheel.name, expected);
-        assert_eq!(wheel.sha256, "a".repeat(64));
-        assert_consumed();
-    }
-
-    #[test]
-    fn live_resolution_uses_pinned_channels_and_transfer_arguments() {
-        let mut config = RuntimeConfig {
-            libs_dir: PathBuf::new(),
-            plan_path: None,
-            yt_dlp_version: "2026.09.23".into(),
-            python_release_tag: "20261026".into(),
-            worker_yt_dlp_version: None,
-        };
-        let python = format!(
-            "cpython-3.13.18+20261026-{}-install_only.tar.gz",
-            pbs_target().unwrap()
-        );
-        let pbs = release_metadata(&python, Some(json!(format!("sha256:{}", "b".repeat(64)))));
+    fn live_resolution_only_fetches_the_explicit_binary_release() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config.clone();
+        config.plan_path = None;
+        let name = binary_asset_name().unwrap();
         let _reset = inject(
-            Some(vec![
-                json_response(&pbs),
-                json_response(&release_metadata(
-                    binary_asset_name().unwrap(),
-                    Some(json!(format!("sha256:{}", "a".repeat(64)))),
-                )),
-                json_response(&pbs),
-                json_response(&wheel_metadata()),
-            ]),
+            Some(vec![json_response(&release_metadata(
+                name,
+                Some(json!(format!("sha256:{}", "a".repeat(64)))),
+            ))]),
             vec![],
         );
         let plan = resolve_plan(&config).unwrap();
-        assert_eq!(plan.python_version, "3.13.18");
-        assert_eq!(plan.artifacts.len(), 3);
-        assert_eq!(plan.artifacts[1].name, python);
-        assert_consumed();
+        assert_eq!(plan.artifacts.len(), 1);
+        assert_eq!(plan.artifacts[0].kind, ArtifactKind::Binary);
         INJECTIONS.with(|state| {
             let state = state.borrow();
-            for args in &state.calls {
-                assert_eq!(&args[..7], ["-fsSL", "--retry", "0", "--max-time", "300", "--max-filesize", "67108864"]);
-                assert!(!args.iter().any(|arg| arg.contains("proxy") || arg.contains("cacert") || arg.contains("latest")));
-            }
-            assert_eq!(state.calls[0].last().unwrap(), "https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/20261026");
-            assert_eq!(state.calls[1].last().unwrap(), "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.09.23");
-            assert_eq!(state.calls[3].last().unwrap(), "https://pypi.org/pypi/yt-dlp/2026.09.23/json");
+            assert_eq!(state.calls.len(), 1);
+            assert_eq!(
+                state.calls[0],
+                [
+                    "-fsSL",
+                    "--retry",
+                    "0",
+                    "--max-time",
+                    "300",
+                    "--max-filesize",
+                    "67108864",
+                    "--write-out",
+                    "\n%{http_code}",
+                    "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.09.23",
+                ]
+            );
         });
-        drop(_reset);
-        let fixture = Fixture::new();
-        config.plan_path = fixture.config.plan_path.clone();
-        let _reset = inject(Some(vec![]), vec![]);
-        resolve_plan(&config).unwrap();
         assert_consumed();
+    }
+
+    #[test]
+    fn synthetic_uv_commands_delegate_resolution_and_keep_stable_base_paths() {
+        let fixture = Fixture::new();
+        let root = install_root(&fixture.config.libs_dir).unwrap();
+        for mode in ["default", "explicit", "recorded"] {
+            let mut plan = resolve_plan(&fixture.config).unwrap();
+            plan.python_request = (mode == "explicit").then(|| "cpython>=3.12".into());
+            let preferred = root.join("uv-python/recorded/python");
+            let staging = OwnedStaging::create(&root).unwrap();
+            let _reset = inject(
+                Some(
+                    (0..3)
+                        .map(|_| Reply::Output {
+                            body: vec![],
+                            exit: 0,
+                        })
+                        .collect(),
+                ),
+                vec![],
+            );
+            prepare_environment(
+                &root,
+                &staging.path,
+                &plan,
+                (mode == "recorded").then_some(preferred.as_path()),
+            )
+            .unwrap();
+            INJECTIONS.with(|state| {
+                let state = state.borrow();
+                let venv = &state.calls[0];
+                for flag in ["--no-config", "--no-project", "--relocatable", "--offline"] {
+                    assert!(venv.iter().any(|arg| arg == flag));
+                }
+                let python = &venv[venv.iter().position(|arg| arg == "--python").unwrap() + 1];
+                match mode {
+                    "default" => {
+                        assert_eq!(python, "cpython");
+                        assert!(venv.iter().any(|arg| arg == "--managed-python"));
+                    }
+                    "explicit" => assert_eq!(python, "cpython>=3.12"),
+                    _ => {
+                        assert_eq!(Path::new(python), preferred);
+                        assert!(venv.iter().any(|arg| arg == "--no-python-downloads"));
+                    }
+                }
+                let install = &state.calls[1];
+                assert!(install.iter().any(|arg| arg == "yt-dlp==2026.09.23"));
+                for flag in [
+                    "--no-build",
+                    "--link-mode",
+                    "copy",
+                    "--no-index",
+                    "--no-python-downloads",
+                ] {
+                    assert!(install.iter().any(|arg| arg == flag));
+                }
+                assert!(!install
+                    .iter()
+                    .any(|arg| arg == "--no-deps" || arg == "--system"));
+                assert!(state.calls[2].iter().any(|arg| arg == "check"));
+            });
+            let command = uv_command(&root, &plan);
+            let env: Vec<_> = command.get_envs().collect();
+            assert!(env
+                .iter()
+                .any(|(key, value)| *key == "UV_PYTHON_INSTALL_DIR"
+                    && *value == Some(root.join("uv-python").as_os_str())));
+            assert_consumed();
+            staging.cleanup().unwrap();
+        }
     }
 
     #[test]
@@ -2838,7 +2681,7 @@ mod tests {
         let path = fixture.config.plan_path.as_ref().unwrap();
         let base: JsonValue = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let _reset = inject(Some(vec![]), vec![]);
-        for index in 0..3 {
+        for index in 0..2 {
             for digest in unusable_digests() {
                 let mut plan = base.clone();
                 if let Some(digest) = digest {
@@ -2867,13 +2710,9 @@ mod tests {
         for field in [
             "/schema_version",
             "/yt_dlp",
-            "/python",
-            "/python/python_version",
-            "/python/release_tag",
             "/artifacts",
             "/artifacts/0/name",
             "/artifacts/1/name",
-            "/artifacts/2/name",
             "/artifacts/0/url",
         ] {
             for value in [JsonValue::Null, json!(""), json!(42), json!("wrong")] {
@@ -2888,7 +2727,7 @@ mod tests {
                 assert!(!fixture.root().join("staging").exists());
             }
         }
-        for index in 0..3 {
+        for index in 0..2 {
             let mut plan = base.clone();
             let name = plan["artifacts"][index]["name"].as_str().unwrap();
             plan["artifacts"][index]["name"] = json!(if index == 0 {
@@ -2908,23 +2747,23 @@ mod tests {
         }
         fs::write(path, base.to_string()).unwrap();
         for (version, release, worker, expected) in [
-            ("", "20261026", None, RuntimeErrorCode::ConfigInvalid),
+            ("", None, None, RuntimeErrorCode::ConfigInvalid),
             (
                 "2026.09.23",
-                "latest",
+                Some("latest"),
                 None,
                 RuntimeErrorCode::ConfigInvalid,
             ),
             (
                 "2026.09.23",
-                "20261026",
+                None,
                 Some("different"),
                 RuntimeErrorCode::VersionMismatch,
             ),
         ] {
             let mut config = fixture.config.clone();
             config.yt_dlp_version = version.into();
-            config.python_release_tag = release.into();
+            config.python_release_tag = release.map(str::to_owned);
             config.worker_yt_dlp_version = worker.map(str::to_owned);
             assert_eq!(install_with_retry(config).unwrap_err().code, expected);
         }
@@ -2952,22 +2791,6 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_wheel_entry_is_an_extraction_error() {
-        let fixture = tempfile::tempdir().unwrap();
-        let wheel = fixture.path().join("unsafe.whl");
-        let mut zip = zip::ZipWriter::new(File::create(&wheel).unwrap());
-        zip.start_file("../outside", zip::write::SimpleFileOptions::default())
-            .unwrap();
-        zip.write_all(b"not permitted").unwrap();
-        zip.finish().unwrap();
-        let destination = fixture.path().join("site-packages");
-        fs::create_dir(&destination).unwrap();
-        let error = extract_zip(&wheel, &destination).unwrap_err();
-        assert_eq!(error.code, RuntimeErrorCode::ExtractFailure);
-        assert!(!fixture.path().join("outside").exists());
-    }
-
-    #[test]
     fn initial_manifest_sync_failure_never_exposes_partial_runtime() {
         let fixture = Fixture::new();
         let _reset = inject(None, vec!["candidate-manifest-sync"]);
@@ -2992,7 +2815,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_tools_and_nonzero_tar_use_distinct_error_codes() {
+    fn missing_tools_and_failing_uv_use_distinct_error_codes() {
         let fixture = Fixture::new();
         let _reset = inject(Some(vec![Reply::Missing]), vec![]);
         let error = curl_to_memory("https://fixtures.invalid/metadata", 16).unwrap_err();
@@ -3001,8 +2824,8 @@ mod tests {
         assert_consumed();
         let _reset = inject(Some(vec![Reply::Missing]), vec![]);
         let error = install_with_retry(fixture.config.clone()).unwrap_err();
-        assert_eq!(error.code, RuntimeErrorCode::CurlMissing);
-        assert!(error.message.contains("tool=tar"));
+        assert_eq!(error.code, RuntimeErrorCode::UvMissing);
+        assert!(error.message.contains("tool=uv"));
         assert!(error.message.contains("attempt=1"));
         fixture.no_staging();
         assert_consumed();
@@ -3014,10 +2837,8 @@ mod tests {
             vec![],
         );
         let error = install_with_retry(fixture.config.clone()).unwrap_err();
-        assert_eq!(error.code, RuntimeErrorCode::ExtractFailure);
-        assert!(error
-            .message
-            .contains("tool=tar failed with exit status Some(2)"));
+        assert_eq!(error.code, RuntimeErrorCode::EnvironmentFailure);
+        assert!(error.message.contains("uv failed with exit status Some(2)"));
         assert!(error.message.contains("attempt=1"));
         fixture.no_staging();
         assert_consumed();
@@ -3066,13 +2887,8 @@ mod tests {
         assert_consumed();
         assert!(!fixture.root().join("runtime").exists());
         assert!(!fixture.root().join("staging").exists());
-        let python = format!(
-            "cpython-3.13.18+20261026-{}-install_only.tar.gz",
-            pbs_target().unwrap()
-        );
         let _reset = inject(
             Some(vec![
-                json_response(&release_metadata(&python, None)),
                 json_response(&release_metadata(binary_asset_name().unwrap(), None)),
                 response([], 404, 22),
             ]),
