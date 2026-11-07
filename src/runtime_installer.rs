@@ -42,6 +42,7 @@ enum RuntimeErrorCode {
     ResolveFailure,
     IntegrityFailure,
     ExtractFailure,
+    #[cfg(unix)]
     PermissionFailure,
     PublishFailure,
     StagingFailure,
@@ -59,6 +60,7 @@ impl RuntimeErrorCode {
             Self::ResolveFailure => "RUNTIME_RESOLVE_FAILURE",
             Self::IntegrityFailure => "RUNTIME_INTEGRITY_FAILURE",
             Self::ExtractFailure => "RUNTIME_EXTRACT_FAILURE",
+            #[cfg(unix)]
             Self::PermissionFailure => "RUNTIME_PERMISSION_FAILURE",
             Self::PublishFailure => "RUNTIME_PUBLISH_FAILURE",
             Self::StagingFailure => "RUNTIME_STAGING_FAILURE",

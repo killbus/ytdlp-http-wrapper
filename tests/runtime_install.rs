@@ -412,7 +412,7 @@ async fn legacy_plan_and_release_input_are_rejected_with_migration_guidance() {
 }
 
 #[tokio::test]
-async fn real_uv_rejects_unsafe_wheel_paths_before_publication() {
+async fn real_uv_skips_unsafe_wheel_paths_without_escape() {
     use std::io::Write;
     let root = TempDir::new().unwrap();
     let fixture = build_fixtures(root.path());
@@ -427,17 +427,32 @@ async fn real_uv_rejects_unsafe_wheel_paths_before_publication() {
         .unwrap();
     archive.write_all(b"not allowed").unwrap();
     archive.finish().unwrap();
-    let plan = write_plan(
-        root.path(),
-        &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
-    );
-    let error = ensure_runtime(config(root.path(), &plan))
+    let value: Value = serde_json::from_str(&plan_json(
+        &fixture,
+        Some(&file_sha256(&fixture.binary)),
+        false,
+    ))
+    .unwrap();
+    let plan = write_plan(root.path(), &value.to_string());
+    // uv 0.11.29 skips unsafe members rather than rejecting the whole wheel.
+    let paths = ensure_runtime(config(root.path(), &plan))
         .await
-        .unwrap_err();
-    assert_eq!(error.code(), "RUNTIME_ENVIRONMENT_FAILURE");
-    assert!(!runtime_dir(root.path()).exists());
+        .expect("safe wheel members must still install");
+    assert_installed_plan(root.path(), &paths, &value);
     assert!(!root.path().join("outside").exists());
-    assert_no_owned_staging(root.path());
+    // Extraction uses uv-cache/<temporary>/, so ../outside would land in
+    // uv-cache/. Also check cached/published trees for a normalized payload,
+    // without following interpreter/cache symlinks outside this fixture.
+    let mut directories = vec![root.path().to_path_buf()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            assert_ne!(entry.file_name(), "outside", "{}", entry.path().display());
+            if entry.file_type().unwrap().is_dir() {
+                directories.push(entry.path());
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -519,6 +534,10 @@ async fn identity_change_replaces_same_path() {
         let plan = write_plan(root.path(), &value.to_string());
         let mut request = config(root.path(), &plan);
         let first = ensure_runtime(request.clone()).await.unwrap();
+        let first_manifest: Value = serde_json::from_slice(
+            &fs::read(runtime_dir(root.path()).join("manifest.json")).unwrap(),
+        )
+        .unwrap();
         fs::write(runtime_dir(root.path()).join("old-only"), b"old").unwrap();
         match change {
             "yt-dlp" => {
@@ -531,14 +550,22 @@ async fn identity_change_replaces_same_path() {
                 value["artifacts"][1]["sha256"] = json!(file_sha256(&fixture.wheel));
             }
             "python-request" => {
-                // Same executable, new explicit request text is still an update.
-                request.python_request = Some(
-                    PathBuf::from(managed::host_python())
-                        .parent()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
+                // uv accepts an executable path, not every executable's parent
+                // as an environment root. Keep the file and vary only its spelling.
+                let original = request.python_request.as_deref().unwrap();
+                let executable = Path::new(original);
+                let alternate = format!(
+                    "{}{separator}.{separator}{}",
+                    executable.parent().unwrap().display(),
+                    executable.file_name().unwrap().to_str().unwrap(),
+                    separator = std::path::MAIN_SEPARATOR,
                 );
+                assert_ne!(original, alternate);
+                assert_eq!(
+                    fs::canonicalize(original).unwrap(),
+                    fs::canonicalize(&alternate).unwrap(),
+                );
+                request.python_request = Some(alternate);
             }
             "digest" => {
                 fs::write(&fixture.binary, b"new pinned binary").unwrap();
@@ -554,6 +581,20 @@ async fn identity_change_replaces_same_path() {
         assert_eq!(first.worker_path, second.worker_path);
         assert_eq!(first.python_path_entries, second.python_path_entries);
         assert_installed_plan(root.path(), &second, &value);
+        if change == "python-request" {
+            let second_manifest: Value = serde_json::from_slice(
+                &fs::read(runtime_dir(root.path()).join("manifest.json")).unwrap(),
+            )
+            .unwrap();
+            assert_ne!(
+                first_manifest["plan"]["python_request"],
+                second_manifest["plan"]["python_request"],
+            );
+            assert_eq!(
+                first_manifest["plan"]["environment"],
+                second_manifest["plan"]["environment"],
+            );
+        }
     }
 }
 
