@@ -146,6 +146,24 @@ byte-identical manifest/runtime ID; logs must report `runtime_reused`. Cleanup
 stops/awaits owned containers before removing their private volume; uncertain
 stop retains the data. No deployed roots or existing volumes are used.
 
+Before stopping the offline resident container, the boot smoke sends the
+repository-owned `runtime-ejs-smoke.py` helper over stdin to the installed venv's
+isolated Python interpreter. The helper reads the real installed EJS package's
+`lib()` and `core()` bundles, assembles them in upstream order (`lib`,
+`Object.assign(globalThis, lib)`, `core`), then runs the image's Deno over stdin.
+Deno uses no config/lockfile, no permission prompts or granted permissions,
+no remote/npm imports and cached-only loading; the container still has no network.
+Both a successful process and the explicit `typeof jsc === "function"` load
+marker are required. Missing/empty resources, absent EJS metadata or a Deno
+failure fail the gate. The helper is CI-only, not a request-time installer.
+
+This is real-package **JS entrypoint-load evidence**, not a solved YouTube
+challenge. It does not validate the reported cookie-dependent request, PO Token
+availability, SABR behavior or the video's AVC/HEVC formats. No cookies, player
+scripts or live YouTube endpoints are used. Lightweight mocked script tests cover
+orchestration and negative cases only; actual Deno/package evidence comes from
+hosted Docker CI.
+
 The default version is the owner-approved application pin 2026.10.26, not latest.
 GitHub release and PyPI wheel metadata were verified available on 2026-11-08.
 This gate inherits the application's default; it has no separate pin or fallback.
@@ -157,3 +175,11 @@ venvs using that existing interpreter and synthetic local wheels with METADATA;
 `--offline --no-index` prevents runtime/package downloads. These exercise actual
 uv resolution/publication, not upstream availability. Synthetic command-injection
 tests are separately identified in their test names.
+
+The synthetic yt-dlp wheel declares a `default` extra requiring a separate EJS
+fixture wheel; its tiny lib/core resources are not upstream solver code. Native
+regressions cover default-extra resolution, same-pin old-recipe migration (also
+with valid EJS already present), failed preparation preserving the old tree,
+missing EJS/resources, and repaired reuse with uv/sources unavailable. All native
+Rust/uv and real-image checks run in hosted CI; local checks are formatting and
+lightweight `python -B -m unittest discover -s scripts/tests` only.

@@ -26,6 +26,17 @@
   or Python dependency solvers in Rust. Requires-Python constrains compatibility,
   not a uniquely selected interpreter. Do not claim uv venv automatically searches
   interpreters satisfying all package dependencies.
+- Install the explicit yt-dlp version with its upstream `default` extra, including
+  EJS; uv and package metadata select compatible dependencies. Deno availability
+  alone does not supply challenge solver scripts. Keep the exact installation
+  requirement in runtime identity so a recipe change repairs existing volumes.
+  Probe required EJS package/resources before admission; do not implement another
+  dependency resolver, inject remote downloads into requests, or make Deno a pool.
+  Offline inputs must supply the selected extra's dependency closure. Preserve
+  valid no-uv/no-network reuse and prepare-before-retirement on same-pin upgrades.
+- Real Docker boot verification must exercise the installed EJS bundles under
+  offline Deno, not only `--version`. Distinguish bundle/entrypoint loading from
+  live YouTube challenge solving, cookies, PO Tokens and format availability.
 - Use the explicit yt-dlp request for both binary and package identity. Verify
   proposed release pins against both official GitHub and PyPI metadata. Never
   silently substitute latest or another release. Metadata availability and mock

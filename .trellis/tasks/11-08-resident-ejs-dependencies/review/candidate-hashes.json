@@ -1,0 +1,45 @@
+{
+  "base": "c2ce8adcbbe88ccd2b1ca1d4ad0113ee64954c84",
+  "files": [
+    {
+      "sha256": "55C21A2D09500CFD221087FD1359E20DBC68C34E446A15E85CD9BD9898F73D9B",
+      "path": "src/runtime_installer.rs"
+    },
+    {
+      "sha256": "7A73F8B4F0C077996F03083E144D1A441ED5713E88BB65DA33C22458E391DC50",
+      "path": "worker/probe_environment.py"
+    },
+    {
+      "sha256": "4B3BC362D4AF533176AE9F279C5D7F2A18D5DEFB11E9DA5B849D31CFD2F2FED4",
+      "path": "tests/fixtures/managed_runtime.rs"
+    },
+    {
+      "sha256": "03094B3A96F5B5884A957E619998222A0F77FF4DEE69A48550BE2B555964EFF3",
+      "path": "tests/runtime_install.rs"
+    },
+    {
+      "sha256": "0F16D75A533800F49E9E1D2B6D09182954875FED703C242468E2BA0F72679A26",
+      "path": "scripts/runtime-boot-smoke.py"
+    },
+    {
+      "sha256": "80A4154DEDD1C0F1C992366DD02C582EF67442539A07DCCE73044520D8D6FA96",
+      "path": "scripts/runtime-ejs-smoke.py"
+    },
+    {
+      "sha256": "1E40B7F303417042A0BBF95C488931D04909C89298C3A83F5D3F6D472E99C622",
+      "path": "scripts/tests/test_runtime_boot_smoke.py"
+    },
+    {
+      "sha256": "5CAF1E88BC091CAD12F0F41FED3B51FB77C65A7FE2720205F7A32645684F3059",
+      "path": "scripts/tests/test_runtime_ejs_smoke.py"
+    },
+    {
+      "sha256": "C8E02F8243F258CE96F7A0B47A46EF043962D0EC4C915EDE4E355FD6FF436E43",
+      "path": "README.md"
+    },
+    {
+      "sha256": "02F0BB2F3D3C2792687A1C12BDF728166ED507B2D28CE59CA31D92D42F56FCBF",
+      "path": "scripts/README.md"
+    }
+  ]
+}

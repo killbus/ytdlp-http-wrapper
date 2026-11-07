@@ -64,6 +64,7 @@ fn build_fixtures(root: &Path) -> Fixture {
 
     let wheel = fixtures.join(wheel_name());
     write_wheel(&wheel);
+    managed::ejs_wheel(&fixtures.join(managed::EJS_WHEEL));
 
     Fixture { binary, wheel }
 }
@@ -84,6 +85,7 @@ fn plan_json(fixture: &Fixture, binary_sha: Option<&str>, missing_python: bool) 
     json!({
         "schema_version": 2,
         "offline": true,
+        "wheelhouse": fixture.wheel.parent().unwrap(),
         "yt_dlp": VERSION,
         "artifacts": [
             {
@@ -333,7 +335,7 @@ async fn real_uv_incompatible_python_or_missing_dependency_preserves_prior_runti
 }
 
 #[tokio::test]
-async fn real_uv_resolves_dependencies_ignores_extras_and_records_distribution() {
+async fn real_uv_resolves_default_and_mandatory_dependencies_but_not_other_extras() {
     use std::io::Write;
     let root = TempDir::new().unwrap();
     let fixture = build_fixtures(root.path());
@@ -373,7 +375,14 @@ async fn real_uv_resolves_dependencies_ignores_extras_and_records_distribution()
     let environment = &manifest["plan"]["environment"];
     assert_eq!(environment["yt_dlp_module_version"], VERSION);
     assert!(environment["yt_dlp_distribution_version"].is_string());
-    assert_eq!(environment["packages"].as_array().unwrap().len(), 2);
+    assert_eq!(environment["packages"].as_array().unwrap().len(), 3);
+    assert!(environment["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |package| package["name"] == "yt-dlp-ejs" && package["version"] == managed::EJS_VERSION
+        ));
     assert!(environment["packages"]
         .as_array()
         .unwrap()
@@ -384,6 +393,81 @@ async fn real_uv_resolves_dependencies_ignores_extras_and_records_distribution()
     let mut reuse = request;
     reuse.uv_path = root.path().join("missing-uv");
     assert_eq!(first, ensure_runtime(reuse).await.unwrap());
+}
+
+#[tokio::test]
+async fn missing_default_extra_wheel_rejects_boot_then_recovers() {
+    let root = TempDir::new().unwrap();
+    let fixture = build_fixtures(root.path());
+    let ejs_wheel = fixture.wheel.parent().unwrap().join(managed::EJS_WHEEL);
+    fs::remove_file(&ejs_wheel).unwrap();
+    let plan = write_plan(
+        root.path(),
+        &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
+    );
+    let request = config(root.path(), &plan);
+    let error = ensure_runtime(request.clone()).await.unwrap_err();
+    assert_eq!(error.code(), "RUNTIME_ENVIRONMENT_FAILURE");
+    assert!(error.to_string().contains("yt-dlp-ejs"));
+    assert!(!runtime_dir(root.path()).exists());
+    assert_no_owned_staging(root.path());
+    managed::ejs_wheel(&ejs_wheel);
+    ensure_runtime(request).await.unwrap();
+    assert_single_installation(root.path());
+}
+
+#[tokio::test]
+async fn ejs_package_metadata_and_resources_are_required_for_reuse() {
+    for damaged in [
+        "package",
+        "metadata",
+        "solver",
+        "lib",
+        "core",
+        "empty-lib",
+        "empty-core",
+    ] {
+        let root = TempDir::new().unwrap();
+        let fixture = build_fixtures(root.path());
+        let value: Value = serde_json::from_str(&plan_json(
+            &fixture,
+            Some(&file_sha256(&fixture.binary)),
+            false,
+        ))
+        .unwrap();
+        let plan = write_plan(root.path(), &value.to_string());
+        let request = config(root.path(), &plan);
+        let first = ensure_runtime(request.clone()).await.unwrap();
+        let site = first
+            .python_path_entries
+            .iter()
+            .find(|site| site.join("yt_dlp_ejs").is_dir())
+            .unwrap();
+        let solver = site.join("yt_dlp_ejs/yt/solver");
+        match damaged {
+            "package" => fs::remove_dir_all(site.join("yt_dlp_ejs")).unwrap(),
+            "metadata" => fs::remove_dir_all(
+                site.join(format!("yt_dlp_ejs-{}.dist-info", managed::EJS_VERSION)),
+            )
+            .unwrap(),
+            "solver" => fs::remove_dir_all(&solver).unwrap(),
+            "lib" | "core" => fs::remove_file(solver.join(format!("{damaged}.min.js"))).unwrap(),
+            "empty-lib" => fs::write(solver.join("lib.min.js"), "").unwrap(),
+            "empty-core" => fs::write(solver.join("core.min.js"), " \n").unwrap(),
+            _ => unreachable!(),
+        }
+        fs::write(runtime_dir(root.path()).join("old-only"), b"old").unwrap();
+        let before = snapshot(&runtime_dir(root.path()));
+        let mut unavailable = request.clone();
+        unavailable.uv_path = root.path().join("missing-uv");
+        let error = ensure_runtime(unavailable).await.unwrap_err();
+        assert_eq!(error.code(), "RUNTIME_UV_MISSING", "{damaged}");
+        assert_eq!(before, snapshot(&runtime_dir(root.path())));
+        assert_no_owned_staging(root.path());
+        let repaired = ensure_runtime(request).await.unwrap();
+        assert_eq!(first, repaired, "{damaged}");
+        assert_installed_plan(root.path(), &repaired, &value);
+    }
 }
 
 #[tokio::test]
