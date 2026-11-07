@@ -1,0 +1,60 @@
+{
+  "done": true,
+  "verdict": "PASS",
+  "round": 2,
+  "system_context": {
+    "production_entries": [
+      "Unchanged boot entry: src/main.rs:261 awaits install_runtime before backend startup at src/main.rs:270 and listener binding at src/main.rs:281. src/main.rs:190 forwards deployment inputs to ensure_runtime; this round reviews only F1-F3 closure and repair-induced regressions.",
+      "src/runtime_installer.rs:243 obtains the canonical installation root from install_root at src/runtime_installer.rs:940. Recorded-runtime probing, reuse validation, candidate probing and candidate validation now receive that root at src/runtime_installer.rs:267, src/runtime_installer.rs:281, src/runtime_installer.rs:298 and src/runtime_installer.rs:302."
+    ],
+    "upstream_callers": [
+      "src/runtime_installer.rs:303 calls publish; OwnedStaging stores the canonical root at src/runtime_installer.rs:1026. After rename and cleanup disarming, src/runtime_installer.rs:1611 passes staging.root into final validation. validate_runtime at src/runtime_installer.rs:662 forwards its root to probe_environment at src/runtime_installer.rs:685.",
+      ".github/workflows/ci.yml:43 invokes scripts/ci.py:143; locked all-target Clippy at scripts/ci.py:147 and native tests at scripts/ci.py:164 reach the restored integration import, retained dependency-graph test and installer regression tests. .github/workflows/ci.yml:65 continues to invoke the existing real-entrypoint boot smoke."
+    ],
+    "downstream_dependencies": [
+      "src/runtime_installer.rs:1271 constructs the real Python probe command and appends directory, version and canonical root at src/runtime_installer.rs:1276. worker/probe_environment.py:26 consumes sys.argv[3] through resolved(); worker/probe_environment.py:33 retains both base-executable and base-prefix exclusions for the actual runtime/staging directories.",
+      "src/runtime_installer.rs:1488 confines command interception to cfg(test). The test-only Reply::Execute at src/runtime_installer.rs:1778 is recorded at src/runtime_installer.rs:1842 and returns None at src/runtime_installer.rs:1849, so normal spawn and wait_with_output at src/runtime_installer.rs:1497 and src/runtime_installer.rs:1518 still execute. It neither fabricates success nor adds a production bypass.",
+      "scripts/runtime-boot-smoke.py:13 selects /downloads/staging; scripts/runtime-boot-smoke.py:33 uses it for both backend launches and scripts/runtime-boot-smoke.py:80 reads its manifest. scripts/runtime-boot-smoke.py:82 requires both observed base fields beneath stable uv-python storage. Existing version, unchanged-manifest/reuse-log, offline/missing-uv, shutdown and owned-cleanup checks remain at scripts/runtime-boot-smoke.py:31, scripts/runtime-boot-smoke.py:86, scripts/runtime-boot-smoke.py:61 and scripts/runtime-boot-smoke.py:94."
+    ],
+    "module_and_spec_responsibility": "M0-M6 in .trellis/tasks/11-06-immutable-runtime-install/review/managed-python-owner-decisions.md remain authoritative. F1/F3 concern M5 native verification and preservation of binary-transfer safety assertions; F2 concerns M2/M3 valid reuse and stable-base publication. No design reopening or unrelated code review was performed. HEAD remains 658075b17d1d02475bc2506ba86d93caac03714c on fix/pbs-cpython-selection. Independently verified all 22 round-2 candidate hashes and all 13 protected original hashes, including the archived round-1 findings, unchanged owner authority and frozen backend/protocol/history files. Dirty-state differences from the snapshot are only its expected round-2 start/dispatch records. Only the current findings JSON is written by this review."
+  },
+  "spec_conformance_summary": "All three ACCEPTED repairs are verified and closed. F1 restores the missing import without altering dependency-graph assertions. F2 passes the authoritative root through every production and test probe/validation call site, retains both containment checks, and adds bounded path/update/smoke coverage without changing publication semantics or introducing production test hooks. F3 restores complete binary metadata curl argv equality, including the exact pinned endpoint and transfer limits. No blocking repair-induced regression was found. PASS means code-review acceptance only: hosted CI, actual native/runtime behavior, rollout, task completion and Git delivery are not approved or claimed.",
+  "test_assertion_review": "Independently executed python -B -m unittest discover -s scripts/tests -p test_probe_environment.py -v: 3 tests passed in 0.011 seconds. These execute the actual probe AST argument/containment section with pure Windows/POSIX paths and cover ordinary/staging-named roots, candidate/published locations, stable private/external bases, and both forbidden base fields at directory/descendant boundaries. They replace resolved() with pure path construction and do not prove filesystem canonicalization or live relocation. Independently executed the focused test_runtime_boot_smoke.py discovery: 5 mocked tests passed in 0.008 seconds; the printed Docker timeout is the intentional failure-propagation mock, not Docker execution. Read all changed Rust call sites and the seven-command Execute recorder: the existing offline worker-identity update records four real probe commands and asserts the same canonical root, old/candidate/published directories, argument shape and consumed replies, while preserving fixed-path replacement, sentinel removal, guard disarming and byte-identical no-fetch reuse assertions. The native test is not run locally. A read-only source comparison confirms the dependency-graph function is identical to baseline and its Command import is present. Four changed/new Python files parse successfully. The restored exact curl argument assertion is inspected but not executed; it remains a native CI obligation. No complete suite, Rust build/check/test/Clippy, runtime provisioning or Docker command was run.",
+  "blocking_findings": [],
+  "resolved_previous": [
+    {
+      "id": "F1",
+      "resolution": "RESOLVED",
+      "evidence": "tests/runtime_install.rs:11 restores use std::process::Command and binds the retained Command::new call at tests/runtime_install.rs:908. The dependency_graph_has_no_yt_dlp_or_lofty function at tests/runtime_install.rs:906 is text-identical to the specified baseline, verified independently with a read-only comparison. Native compilation/execution remains pending CI."
+    },
+    {
+      "id": "F2",
+      "resolution": "RESOLVED",
+      "evidence": "src/runtime_installer.rs:267, src/runtime_installer.rs:281, src/runtime_installer.rs:298 and src/runtime_installer.rs:302 propagate the canonical root through old-runtime/reuse/candidate paths; src/runtime_installer.rs:1611 forwards OwnedStaging.root after publication. src/runtime_installer.rs:1278 supplies the third probe argument, consumed at worker/probe_environment.py:26 without basename inference. Both original containment rejections remain at worker/probe_environment.py:34 and worker/probe_environment.py:35. The focused path tests pass; src/runtime_installer.rs:2065 checks real offline update/reuse probe bindings in a staging-named root, and scripts/runtime-boot-smoke.py:13 exercises that basename with a private managed base in the existing hosted cold/reuse scenario. The test recorder remains cfg(test)-only passthrough. Native update and live managed-base evidence remain pending."
+    },
+    {
+      "id": "F3",
+      "resolution": "RESOLVED",
+      "evidence": "src/runtime_installer.rs:2584 requires exactly one metadata call; src/runtime_installer.rs:2585 compares the complete argv against -fsSL --retry 0 --max-time 300 --max-filesize 67108864 --write-out newline+%{http_code} and the exact https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.09.23 URL. This equality also rejects extra proxy/cacert/latest arguments. Artifact count/kind and reply-consumption assertions remain at src/runtime_installer.rs:2580 and src/runtime_installer.rs:2601. Production curl construction at src/runtime_installer.rs:1388 is unchanged. Obsolete PBS/PyPI selector tests are not restored."
+    }
+  ],
+  "withdrawn": [],
+  "follow_ups": [
+    {
+      "location": ".github/workflows/ci.yml:43; .github/workflows/ci.yml:65",
+      "issue": "Hosted locked all-target Clippy, Windows/Linux native tests, the offline real-uv update/reuse and exact curl assertions, release/lifecycle/onefile/containment gates, and actual managed-base cold boot/publication/offline resident reuse remain pending. Pure-path and mocked results are not live relocation evidence.",
+      "why_out_of_scope": "M5 and the round-2 brief reserve heavy/native/live execution for CI. Their absence is an explicit validation limitation, not a new repair regression or a reason to claim those gates passed."
+    },
+    {
+      "location": "src/main.rs:110; scripts/runtime-boot-smoke.py:113",
+      "issue": "The unchanged default yt-dlp pin 2026.09.23 remains availability-unverified; the owner recorded a PyPI 404. The real boot smoke retains that default unless explicitly supplied another approved pin and may fail independently of the reviewed repairs.",
+      "why_out_of_scope": "M5 separates this rollout decision from code-review acceptance. This review does not change the pin, substitute a release, weaken the smoke or claim live success."
+    }
+  ],
+  "discarded_count": {
+    "unreachable": 0,
+    "out_of_scope": 0,
+    "no_clause": 0
+  },
+  "escalation_reason": ""
+}

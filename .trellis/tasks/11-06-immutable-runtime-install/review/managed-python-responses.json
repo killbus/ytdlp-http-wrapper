@@ -1,0 +1,54 @@
+{
+  "round": 2,
+  "scope_summary": "Only owner-accepted F1-F3 repairs: restore the integration-test Command binding, propagate the authoritative canonical installation root to private environment probes, and restore retained binary curl transfer assertions. Add bounded path/update/smoke regressions. The yt-dlp default, frozen requirements/specs/owner records, dependencies, workflows, worker protocol and unrelated starting dirt remain unchanged. No subagents, Git delivery, local heavy Rust/Docker gates or real runtime provisioning.",
+  "changes": [
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Restore std::process::Command; preserve the dependency-graph test verbatim.",
+      "spec_clause": "M5; F1"
+    },
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Thread the canonical root through recorded-runtime, reuse and candidate validation/probes; publication forwards OwnedStaging.root to final validation. Extend the existing offline worker-identity replacement test to a root named staging and record real probe argv through the existing cfg(test) reply hook, covering old/candidate/published probes plus retained update/reuse assertions. Restore the exact single curl metadata argv, pinned URL and transfer limits; no production curl-policy change.",
+      "spec_clause": "M3/M5; F2/F3"
+    },
+    {
+      "file": "worker/probe_environment.py",
+      "intent": "Read and normalize the explicit installation-root argument instead of inferring it from a parent basename. Keep both base-executable and base-prefix containment rejections.",
+      "spec_clause": "M3/M5; F2"
+    },
+    {
+      "file": "scripts/tests/test_probe_environment.py",
+      "intent": "Execute the actual argument/containment section of the probe AST with pure POSIX/Windows paths: ordinary/staging-named roots, candidate/published paths, stable private/external bases, and forbidden base/prefix directories and descendants. No filesystem relocation or provisioning is modeled as live evidence.",
+      "spec_clause": "M3/M5; F2"
+    },
+    {
+      "file": "scripts/runtime-boot-smoke.py",
+      "intent": "Use /downloads/staging for the existing real-entrypoint cold-install/offline-reuse smoke, read its corresponding manifest, and require the managed base executable and prefix beneath its stable uv-python directory. Preserve pin handling, entrypoint, reuse and shutdown checks; no second upstream version or CI-policy expansion.",
+      "spec_clause": "M3/M5; F2"
+    },
+    {
+      "file": "scripts/tests/test_runtime_boot_smoke.py",
+      "intent": "Check matching staging-named roots for cold/reuse arguments and manifest reads; mock the existing smoke to accept stable bases and reject either misplaced base field while retaining prior assertions.",
+      "spec_clause": "M3/M5; F2"
+    }
+  ],
+  "test_notes": "Actually executed: initial SHA256 comparison matched all 19 managed-python-fix-start entries. Before the probe fix, python -B -m unittest discover -s scripts/tests -p test_probe_environment.py -v exited 1 with 12 failing subcases, reproducing the staging-named published-root defect in both path flavors. After repair the same command exited 0 (3 tests); python -B -m unittest discover -s scripts/tests -p test_runtime_boot_smoke.py -v exited 0 (5 mocked tests). The emitted Docker timeout diagnostic is the existing mocked failure-propagation test, not a Docker run. Initial cargo fmt --check exited 1 for two formatting-only hunks; rustfmt --edition 2021 src/runtime_installer.rs tests/runtime_install.rs then exited 0, and final cargo fmt --check plus git diff --check -- src/runtime_installer.rs tests/runtime_install.rs exited 0. An inline python -B source check parsed four Python files, verified the Command binding and identical dependency-graph test text against baseline 658075b17d1d02475bc2506ba86d93caac03714c, checked the explicit root call chain and unchanged default pin (exit 0). Native tests were not run: all-target Clippy, the recorded offline real-uv update/reuse test and exact curl argv test, native Windows/Linux behavior, release/lifecycle/containment gates and actual managed-base cold boot/publication/reuse remain pending CI. Pure-path/mock checks do not prove real environment relocation. The unchanged 2026.09.23 pin remains availability-unverified; no fallback or live-success claim. Final hash checks matched 13 unchanged round-2 snapshot entries and 13 protected original entries. A first dirty-list comparison flagged the fix-start/fix-dispatch coordinator records omitted by the snapshot itself; both were present in the first observed status, and the corrected comparison exited 0 with only the new probe test added. Branch/HEAD remain unchanged.",
+  "finding_responses": [
+    {
+      "id": "F1",
+      "response": "ACCEPTED",
+      "action_or_evidence": "Restored use std::process::Command in tests/runtime_install.rs. Source comparison confirms the retained dependency_graph_has_no_yt_dlp_or_lofty function is unchanged from the specified baseline and its Command::new binding is now present. Compilation/execution await the existing native CI gates."
+    },
+    {
+      "id": "F2",
+      "response": "ACCEPTED",
+      "action_or_evidence": "The probe now consumes sys.argv[3] through resolved(); no basename inference remains. install_once passes its canonical root for old-runtime probing, reuse validation and both candidate probes; publish uses the same canonical root retained by OwnedStaging for post-publication validation. Both original containment assertions remain. Focused pure-path tests fail before and succeed after the repair on POSIX/Windows semantics. The existing offline replacement/reuse test now uses a staging-named libs root and asserts that all four update probe commands carry that exact canonical root, including both candidate probes and the post-publication probe. Its Execute reply variant only records and passes through existing test commands; no production hook/API was added. The existing live smoke targets /downloads/staging and asserts a stable managed base for cold boot/reuse. Native update and real managed runtime evidence remain CI work, not locally executed claims."
+    },
+    {
+      "id": "F3",
+      "response": "ACCEPTED",
+      "action_or_evidence": "live_resolution_only_fetches_the_explicit_binary_release now requires exactly one call with the complete argv: -fsSL --retry 0 --max-time 300 --max-filesize 67108864 --write-out newline+%{http_code}, followed by https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.09.23. Exact vector equality also rejects extra proxy/cacert/latest arguments. Artifact count/kind and consumed-reply assertions remain; obsolete PBS/PyPI selectors are not restored. Native execution awaits CI."
+    }
+  ]
+}

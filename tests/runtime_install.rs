@@ -4,8 +4,9 @@
 //! runtime installer. The plan file points at file:// fixtures, so no test
 //! touches the network.
 
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
+#[cfg(windows)]
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -15,12 +16,11 @@ use tempfile::TempDir;
 use ytdlp_http_wrapper::runtime_installer::{ensure_runtime, RuntimeConfig, RuntimePaths};
 
 const VERSION: &str = "2026.09.23";
-const PYTHON_VERSION: &str = "3.13.18";
-const PYTHON_RELEASE_TAG: &str = "20261026";
+#[path = "fixtures/managed_runtime.rs"]
+mod managed;
 
 struct Fixture {
     binary: PathBuf,
-    python: PathBuf,
     wheel: PathBuf,
 }
 
@@ -32,7 +32,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn file_sha256(path: &Path) -> String {
-    sha256_hex(&fs::read(path).expect("fixture must be readable"))
+    managed::hash(path)
 }
 
 fn binary_name() -> &'static str {
@@ -49,41 +49,11 @@ fn binary_name() -> &'static str {
     }
 }
 
-fn pbs_target() -> &'static str {
-    if cfg!(windows) && cfg!(target_arch = "x86_64") {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(windows) {
-        "i686-pc-windows-msvc"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "aarch64-apple-darwin"
-    } else if cfg!(target_os = "macos") {
-        "x86_64-apple-darwin"
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(target_arch = "arm") {
-        "armv7-unknown-linux-gnueabihf"
-    } else {
-        "x86_64-unknown-linux-gnu"
-    }
-}
-
-fn python_name() -> String {
-    format!(
-        "cpython-{}+{}-{}-install_only.tar.gz",
-        PYTHON_VERSION,
-        PYTHON_RELEASE_TAG,
-        pbs_target()
-    )
-}
-
 fn wheel_name() -> String {
     format!("yt_dlp-{}-py3-none-any.whl", VERSION)
 }
 
-fn file_url(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
-    format!("file:///{}", path.trim_start_matches('/'))
-}
+use managed::file_url;
 
 fn build_fixtures(root: &Path) -> Fixture {
     let fixtures = root.join("fixtures");
@@ -92,84 +62,29 @@ fn build_fixtures(root: &Path) -> Fixture {
     let binary = fixtures.join(binary_name());
     fs::write(&binary, b"fake yt-dlp binary\n").expect("write binary fixture");
 
-    let python = fixtures.join(python_name());
-    write_python_archive(&python, root);
-
     let wheel = fixtures.join(wheel_name());
     write_wheel(&wheel);
 
-    Fixture {
-        binary,
-        python,
-        wheel,
-    }
-}
-
-fn write_python_archive(path: &Path, root: &Path) {
-    let tar_root = root.join("python-tree");
-    fs::create_dir_all(tar_root.join("python").join("bin")).expect("create python fixture tree");
-    fs::write(
-        tar_root.join("python").join("bin").join("python3"),
-        b"python marker\n",
-    )
-    .expect("write python3 marker");
-    fs::write(
-        tar_root.join("python").join("python.exe"),
-        b"python marker\n",
-    )
-    .expect("write python.exe marker");
-    let status = Command::new("tar")
-        .arg("-czf")
-        .arg(path)
-        .arg("-C")
-        .arg(&tar_root)
-        .arg("python")
-        .status()
-        .expect("system tar must be available for the fixture");
-    assert!(status.success(), "tar failed to build {path:?}");
+    Fixture { binary, wheel }
 }
 
 fn write_wheel(path: &Path) {
     write_wheel_version(path, VERSION);
 }
-
 fn write_wheel_version(path: &Path, version: &str) {
-    let file = File::create(path).expect("create wheel fixture");
-    let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    writer
-        .start_file("yt_dlp/__init__.py", options)
-        .expect("start __init__.py");
-    writer
-        .write_all(format!("__version__ = \"{version}\"\n").as_bytes())
-        .expect("write __init__.py");
-    writer
-        .start_file("yt_dlp/version.py", options)
-        .expect("start version.py");
-    writer
-        .write_all(format!("__version__ = \"{version}\"\n").as_bytes())
-        .expect("write version.py");
-    writer
-        .start_file(format!("yt_dlp-{version}.dist-info/RECORD"), options)
-        .expect("start RECORD");
-    writer.write_all(b"").expect("write RECORD");
-    writer.finish().expect("finish wheel fixture");
+    managed::wheel(path, version, ">=3.10", "");
 }
 
 fn plan_json(fixture: &Fixture, binary_sha: Option<&str>, missing_python: bool) -> String {
-    let python_url = if missing_python {
-        file_url(&fixture.python.with_extension("missing.tar.gz"))
+    let wheel_url = if missing_python {
+        file_url(&fixture.wheel.with_extension("missing.whl"))
     } else {
-        file_url(&fixture.python)
+        file_url(&fixture.wheel)
     };
     json!({
-        "schema_version": 1,
+        "schema_version": 2,
+        "offline": true,
         "yt_dlp": VERSION,
-        "python": {
-            "release_tag": PYTHON_RELEASE_TAG,
-            "python_version": PYTHON_VERSION
-        },
         "artifacts": [
             {
                 "name": binary_name(),
@@ -177,13 +92,8 @@ fn plan_json(fixture: &Fixture, binary_sha: Option<&str>, missing_python: bool) 
                 "sha256": binary_sha.unwrap_or("").to_owned()
             },
             {
-                "name": python_name(),
-                "url": python_url,
-                "sha256": file_sha256(&fixture.python)
-            },
-            {
                 "name": wheel_name(),
-                "url": file_url(&fixture.wheel),
+                "url": wheel_url,
                 "sha256": file_sha256(&fixture.wheel)
             }
         ]
@@ -202,7 +112,9 @@ fn config(root: &Path, plan: &Path) -> RuntimeConfig {
         libs_dir: root.join("libs"),
         plan_path: Some(plan.to_owned()),
         yt_dlp_version: VERSION.to_owned(),
-        python_release_tag: PYTHON_RELEASE_TAG.to_owned(),
+        python_release_tag: None,
+        python_request: Some(managed::host_python()),
+        uv_path: "uv".into(),
         worker_yt_dlp_version: Some(VERSION.to_owned()),
     }
 }
@@ -219,14 +131,16 @@ struct SnapshotEntry {
 fn snapshot(root: &Path) -> Vec<SnapshotEntry> {
     fn visit(root: &Path, path: &Path, entries: &mut Vec<SnapshotEntry>) {
         let metadata = fs::symlink_metadata(path).expect("snapshot metadata");
-        assert!(
-            !metadata.file_type().is_symlink(),
-            "fixture snapshot expects ordinary paths"
-        );
         entries.push(SnapshotEntry {
             path: path.strip_prefix(root).unwrap().to_owned(),
             directory: metadata.is_dir(),
-            bytes: if metadata.is_dir() {
+            bytes: if metadata.file_type().is_symlink() {
+                fs::read_link(path)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_bytes()
+                    .to_vec()
+            } else if metadata.is_dir() {
                 Vec::new()
             } else {
                 fs::read(path).unwrap()
@@ -260,7 +174,7 @@ fn assert_single_installation(root: &Path) {
         .map(|entry| entry.unwrap().file_name())
         .collect();
     names.sort();
-    assert_eq!(names, ["runtime", "staging"]);
+    assert_eq!(names, ["runtime", "staging", "uv-cache", "uv-python"]);
     assert_no_owned_staging(root);
 }
 
@@ -269,10 +183,11 @@ fn assert_installed_plan(root: &Path, paths: &RuntimePaths, plan: &Value) {
     assert_eq!(paths.binary_path.parent().unwrap(), installed.join("bin"));
     assert!(paths.python_path.starts_with(installed.join("python")));
     assert_eq!(paths.worker_path, installed.join("worker/ytdlp_worker.py"));
-    assert_eq!(
-        paths.python_path_entries,
-        [installed.join("python/site-packages")]
-    );
+    assert!(!paths.python_path_entries.is_empty());
+    assert!(paths
+        .python_path_entries
+        .iter()
+        .all(|path| path.starts_with(installed.join("python"))));
     let manifest: Value =
         serde_json::from_slice(&fs::read(installed.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["runtime_id"], paths.runtime_id);
@@ -280,13 +195,19 @@ fn assert_installed_plan(root: &Path, paths: &RuntimePaths, plan: &Value) {
         manifest["platform"],
         json!({"os": std::env::consts::OS, "arch": std::env::consts::ARCH})
     );
+    assert_eq!(manifest["schema_version"], 2);
+    assert_eq!(manifest["plan"]["yt_dlp_version"], plan["yt_dlp"]);
+    assert_eq!(manifest["plan"]["environment"]["implementation"], "CPython");
     assert_eq!(
-        manifest["versions"],
-        json!({
-            "yt_dlp": plan["yt_dlp"], "python": plan["python"]["python_version"],
-            "python_release_tag": plan["python"]["release_tag"]
-        })
+        manifest["plan"]["environment"]["yt_dlp_module_version"],
+        plan["yt_dlp"]
     );
+    assert!(!Path::new(
+        manifest["plan"]["environment"]["base_executable"]
+            .as_str()
+            .unwrap()
+    )
+    .starts_with(root));
     let worker = include_bytes!("../worker/ytdlp_worker.py");
     assert_eq!(fs::read(&paths.worker_path).unwrap(), worker);
     assert_eq!(manifest["worker_script_sha256"], sha256_hex(worker));
@@ -296,16 +217,9 @@ fn assert_installed_plan(root: &Path, paths: &RuntimePaths, plan: &Value) {
         for key in ["name", "sha256"] {
             assert_eq!(actual[key], artifact[key]);
         }
-        assert_eq!(actual["kind"], ["binary", "python", "wheel"][index]);
-        assert_eq!(
-            actual["source"],
-            ["github-release", "python-build-standalone", "pypi"][index]
-        );
-        let resolved_tag = if index == 1 {
-            plan["python"]["release_tag"].clone()
-        } else {
-            plan["yt_dlp"].clone()
-        };
+        assert_eq!(actual["kind"], ["binary", "wheel"][index]);
+        assert_eq!(actual["source"], ["github-release", "pypi"][index]);
+        let resolved_tag = plan["yt_dlp"].clone();
         assert_eq!(actual["resolved_tag"], resolved_tag);
         assert_eq!(
             file_sha256(&installed.join("artifacts").join(name)),
@@ -340,12 +254,7 @@ async fn install_happy_path_then_reuse_without_fetching() {
     assert!(paths.worker_path.starts_with(&installed));
     assert!(installed.join("manifest.json").is_file());
     assert!(installed.join("artifacts").is_dir());
-    assert!(installed
-        .join("python")
-        .join("site-packages")
-        .join("yt_dlp")
-        .join("version.py")
-        .is_file());
+    assert!(installed.join("python/pyvenv.cfg").is_file());
     assert_single_installation(root.path());
     let before = snapshot(&root.path().join("libs"));
     fs::rename(
@@ -386,6 +295,152 @@ async fn equal_explicit_worker_version_installs_and_reuses() {
 }
 
 #[tokio::test]
+async fn real_uv_incompatible_python_or_missing_dependency_preserves_prior_runtime() {
+    for incompatible_python in [true, false] {
+        let root = TempDir::new().unwrap();
+        let fixture = build_fixtures(root.path());
+        let plan = write_plan(
+            root.path(),
+            &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
+        );
+        let request = config(root.path(), &plan);
+        ensure_runtime(request.clone()).await.unwrap();
+        let before = snapshot(&runtime_dir(root.path()));
+        managed::wheel(
+            &fixture.wheel,
+            VERSION,
+            if incompatible_python {
+                ">=99"
+            } else {
+                ">=3.10"
+            },
+            if incompatible_python {
+                ""
+            } else {
+                "Requires-Dist: missing-wrapper-fixture==1.0\n"
+            },
+        );
+        write_plan(
+            root.path(),
+            &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
+        );
+        let error = ensure_runtime(request).await.unwrap_err();
+        assert_eq!(error.code(), "RUNTIME_ENVIRONMENT_FAILURE");
+        assert!(error.to_string().contains("--runtime-python"));
+        assert_eq!(before, snapshot(&runtime_dir(root.path())));
+        assert_no_owned_staging(root.path());
+    }
+}
+
+#[tokio::test]
+async fn real_uv_resolves_dependencies_ignores_extras_and_records_distribution() {
+    use std::io::Write;
+    let root = TempDir::new().unwrap();
+    let fixture = build_fixtures(root.path());
+    managed::wheel(
+        &fixture.wheel,
+        VERSION,
+        ">=3.10",
+        "Requires-Dist: wrapper-fixture-dep==1.0\nProvides-Extra: optional\nRequires-Dist: absent-optional-fixture; extra == 'optional'\n",
+    );
+    let wheelhouse = fixture.wheel.parent().unwrap();
+    let mut dependency = zip::ZipWriter::new(
+        fs::File::create(wheelhouse.join("wrapper_fixture_dep-1.0-py3-none-any.whl")).unwrap(),
+    );
+    for (name, contents) in [
+        ("wrapper_fixture_dep.py", "VALUE = 1\n"),
+        ("wrapper_fixture_dep-1.0.dist-info/METADATA", "Metadata-Version: 2.3\nName: wrapper-fixture-dep\nVersion: 1.0\n"),
+        ("wrapper_fixture_dep-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"),
+        ("wrapper_fixture_dep-1.0.dist-info/RECORD", "wrapper_fixture_dep.py,,\nwrapper_fixture_dep-1.0.dist-info/METADATA,,\nwrapper_fixture_dep-1.0.dist-info/WHEEL,,\nwrapper_fixture_dep-1.0.dist-info/RECORD,,\n"),
+    ] {
+        dependency.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        dependency.write_all(contents.as_bytes()).unwrap();
+    }
+    dependency.finish().unwrap();
+    let mut source_plan: Value = serde_json::from_str(&plan_json(
+        &fixture,
+        Some(&file_sha256(&fixture.binary)),
+        false,
+    ))
+    .unwrap();
+    source_plan["wheelhouse"] = json!(wheelhouse);
+    let plan = write_plan(root.path(), &source_plan.to_string());
+    let request = config(root.path(), &plan);
+    let first = ensure_runtime(request.clone()).await.unwrap();
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(runtime_dir(root.path()).join("manifest.json")).unwrap())
+            .unwrap();
+    let environment = &manifest["plan"]["environment"];
+    assert_eq!(environment["yt_dlp_module_version"], VERSION);
+    assert!(environment["yt_dlp_distribution_version"].is_string());
+    assert_eq!(environment["packages"].as_array().unwrap().len(), 2);
+    assert!(environment["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|package| package["name"] == "wrapper-fixture-dep" && package["version"] == "1.0"));
+    // The relocated environment works after staging deletion and cache removal
+    // is unnecessary: a missing tool proves reuse performs no uv resolution.
+    let mut reuse = request;
+    reuse.uv_path = root.path().join("missing-uv");
+    assert_eq!(first, ensure_runtime(reuse).await.unwrap());
+}
+
+#[tokio::test]
+async fn legacy_plan_and_release_input_are_rejected_with_migration_guidance() {
+    let root = TempDir::new().unwrap();
+    let fixture = build_fixtures(root.path());
+    let mut value: Value = serde_json::from_str(&plan_json(
+        &fixture,
+        Some(&file_sha256(&fixture.binary)),
+        false,
+    ))
+    .unwrap();
+    value["schema_version"] = json!(1);
+    let plan = write_plan(root.path(), &value.to_string());
+    let error = ensure_runtime(config(root.path(), &plan))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "RUNTIME_CONFIG_INVALID");
+    assert!(error.to_string().contains("schema_version 2"));
+    let mut request = config(root.path(), &plan);
+    request.python_release_tag = Some("20261026".into());
+    let error = ensure_runtime(request).await.unwrap_err();
+    assert_eq!(error.code(), "RUNTIME_CONFIG_INVALID");
+    assert!(error.to_string().contains("--runtime-python"));
+    assert!(!runtime_dir(root.path()).exists());
+}
+
+#[tokio::test]
+async fn real_uv_rejects_unsafe_wheel_paths_before_publication() {
+    use std::io::Write;
+    let root = TempDir::new().unwrap();
+    let fixture = build_fixtures(root.path());
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fixture.wheel)
+        .unwrap();
+    let mut archive = zip::ZipWriter::new_append(file).unwrap();
+    archive
+        .start_file("../outside", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(b"not allowed").unwrap();
+    archive.finish().unwrap();
+    let plan = write_plan(
+        root.path(),
+        &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
+    );
+    let error = ensure_runtime(config(root.path(), &plan))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "RUNTIME_ENVIRONMENT_FAILURE");
+    assert!(!runtime_dir(root.path()).exists());
+    assert!(!root.path().join("outside").exists());
+    assert_no_owned_staging(root.path());
+}
+
+#[tokio::test]
 async fn deflated_wheel_entries_are_extracted() {
     let root = TempDir::new().expect("tempdir");
     let fixture = build_fixtures(root.path());
@@ -396,13 +451,13 @@ async fn deflated_wheel_entries_are_extracted() {
     ensure_runtime(config(root.path(), &plan))
         .await
         .expect("install");
-    let version_file = runtime_dir(root.path())
-        .join("python")
-        .join("site-packages")
-        .join("yt_dlp")
-        .join("version.py");
-    let contents = fs::read_to_string(version_file).expect("version.py must be readable");
-    assert!(contents.contains(VERSION));
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(runtime_dir(root.path()).join("manifest.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        manifest["plan"]["environment"]["yt_dlp_module_version"],
+        VERSION
+    );
 }
 
 #[tokio::test]
@@ -452,7 +507,7 @@ async fn missing_local_source_fails_before_admission_and_recovers() {
 
 #[tokio::test]
 async fn identity_change_replaces_same_path() {
-    for change in ["yt-dlp", "python-version", "python-release", "digest"] {
+    for change in ["yt-dlp", "python-request", "digest"] {
         let root = TempDir::new().unwrap();
         let fixture = build_fixtures(root.path());
         let mut value: Value = serde_json::from_str(&plan_json(
@@ -471,20 +526,19 @@ async fn identity_change_replaces_same_path() {
                 request.yt_dlp_version = version.into();
                 request.worker_yt_dlp_version = Some(version.into());
                 value["yt_dlp"] = json!(version);
-                value["artifacts"][2]["name"] = json!(format!("yt_dlp-{version}-py3-none-any.whl"));
+                value["artifacts"][1]["name"] = json!(format!("yt_dlp-{version}-py3-none-any.whl"));
                 write_wheel_version(&fixture.wheel, version);
-                value["artifacts"][2]["sha256"] = json!(file_sha256(&fixture.wheel));
+                value["artifacts"][1]["sha256"] = json!(file_sha256(&fixture.wheel));
             }
-            "python-version" => {
-                value["python"]["python_version"] = json!("3.13.19");
-                value["artifacts"][1]["name"] =
-                    json!(python_name().replace(PYTHON_VERSION, "3.13.19"));
-            }
-            "python-release" => {
-                request.python_release_tag = "20261101".into();
-                value["python"]["release_tag"] = json!("20261101");
-                value["artifacts"][1]["name"] =
-                    json!(python_name().replace(PYTHON_RELEASE_TAG, "20261101"));
+            "python-request" => {
+                // Same executable, new explicit request text is still an update.
+                request.python_request = Some(
+                    PathBuf::from(managed::host_python())
+                        .parent()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
             "digest" => {
                 fs::write(&fixture.binary, b"new pinned binary").unwrap();
@@ -519,7 +573,7 @@ async fn retained_archive_binary_or_worker_corruption_reinstalls() {
         let damaged = match corrupted {
             "archive" => runtime_dir(root.path())
                 .join("artifacts")
-                .join(python_name()),
+                .join(wheel_name()),
             "binary" => first.binary_path.clone(),
             "worker" => first.worker_path.clone(),
             _ => unreachable!(),
@@ -538,8 +592,8 @@ async fn mismatched_manifest_reinstalls_independent_of_runtime_id() {
         "/runtime_id",
         "/platform/os",
         "/platform/arch",
-        "/versions/python",
-        "/versions/python_release_tag",
+        "/plan/environment/python_version",
+        "/plan/environment/base_executable",
         "/artifacts/1/sha256",
         "/worker_script_sha256",
     ] {
@@ -612,7 +666,7 @@ async fn missing_required_python_path_reinstalls() {
 #[tokio::test]
 async fn failed_preparation_preserves_prior_runtime() {
     for corrupt in [false, true] {
-        for failure in ["source", "hash", "tar", "wheel"] {
+        for failure in ["source", "hash", "wheel"] {
             let root = TempDir::new().unwrap();
             let fixture = build_fixtures(root.path());
             let plan = write_plan(
@@ -639,21 +693,13 @@ async fn failed_preparation_preserves_prior_runtime() {
                     fs::write(&fixture.binary, b"source no longer matches its pin").unwrap();
                     "RUNTIME_INTEGRITY_FAILURE"
                 }
-                "tar" | "wheel" => {
-                    fs::write(
-                        if failure == "tar" {
-                            &fixture.python
-                        } else {
-                            &fixture.wheel
-                        },
-                        b"hash-pinned but not an archive",
-                    )
-                    .unwrap();
+                "wheel" => {
+                    fs::write(&fixture.wheel, b"hash-pinned but not an archive").unwrap();
                     write_plan(
                         root.path(),
                         &plan_json(&fixture, Some(&file_sha256(&fixture.binary)), false),
                     );
-                    "RUNTIME_EXTRACT_FAILURE"
+                    "RUNTIME_ENVIRONMENT_FAILURE"
                 }
                 _ => unreachable!(),
             };
@@ -678,12 +724,11 @@ async fn failed_preparation_preserves_prior_runtime() {
 
 #[tokio::test]
 async fn initial_hash_and_extraction_failures_leave_no_runtime_then_recover() {
-    for failure in ["hash", "tar", "wheel"] {
+    for failure in ["hash", "wheel"] {
         let root = TempDir::new().unwrap();
         let fixture = build_fixtures(root.path());
         let damaged = match failure {
             "hash" => &fixture.binary,
-            "tar" => &fixture.python,
             _ => &fixture.wheel,
         };
         let original = fs::read(damaged).unwrap();
@@ -703,7 +748,7 @@ async fn initial_hash_and_extraction_failures_leave_no_runtime_then_recover() {
             if failure == "hash" {
                 "RUNTIME_INTEGRITY_FAILURE"
             } else {
-                "RUNTIME_EXTRACT_FAILURE"
+                "RUNTIME_ENVIRONMENT_FAILURE"
             }
         );
         assert!(!runtime_dir(root.path()).exists());
