@@ -81,6 +81,33 @@ impl Backend {
         temp_dir: Option<PathBuf>,
         pool_size: usize,
     ) -> Result<Self, String> {
+        Self::from_runtime_config(
+            value,
+            python_path,
+            worker_path,
+            python_path_entries,
+            expected_yt_dlp_version,
+            temp_dir,
+            pool_size,
+            "resident",
+        )
+    }
+
+    /// Same selection as `from_config_with_pool_size`, plus the runtime
+    /// identity reported in the resident handshake. Boot passes the runtime-id
+    /// produced by the installer so request logs and the worker handshake carry
+    /// the same generation value.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_runtime_config(
+        value: &str,
+        python_path: PathBuf,
+        worker_path: PathBuf,
+        python_path_entries: Vec<PathBuf>,
+        expected_yt_dlp_version: &str,
+        temp_dir: Option<PathBuf>,
+        pool_size: usize,
+        generation_id: &str,
+    ) -> Result<Self, String> {
         match value {
             "cli" | "" => Ok(Self::Cli),
             "resident" => {
@@ -95,7 +122,7 @@ impl Backend {
                     python_path,
                     worker_path,
                     python_path_entries,
-                    generation_id: "resident".into(),
+                    generation_id: generation_id.into(),
                     worker_id: "worker-1".into(),
                     expected_yt_dlp_version: expected_yt_dlp_version.into(),
                     temp_dir,

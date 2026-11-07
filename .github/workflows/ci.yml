@@ -10,6 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -23,30 +26,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: actions/setup-python@v6
         with:
-          toolchain: stable
-          components: clippy, rustfmt
+          python-version: '3.13'
+
+      - name: Install repository Rust toolchain and components
+        run: rustup show active-toolchain
+      - run: rustup component add rustfmt clippy
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
-      - run: cargo build --locked --release
+      - run: python scripts/ci.py check
+      - run: python scripts/ci.py release
 
       - name: Verify and exercise official Linux onefile
         if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ github.token }}
-          YTDLP_SMOKE_BINARY: ${{ runner.temp }}/yt-dlp-smoke/yt-dlp_linux
-        run: |
-          release=$(gh release view --repo yt-dlp/yt-dlp --json tagName --jq .tagName)
-          echo "Testing yt-dlp release $release"
-          gh release download "$release" --repo yt-dlp/yt-dlp --pattern yt-dlp_linux --pattern SHA2-256SUMS --dir "$(dirname "$YTDLP_SMOKE_BINARY")"
-          (cd "$(dirname "$YTDLP_SMOKE_BINARY")" && sha256sum --check --ignore-missing SHA2-256SUMS)
-          chmod +x "$YTDLP_SMOKE_BINARY"
-          bash scripts/linux-smoke.sh
+        run: bash scripts/ci-linux-smoke.sh
 
   docker:
     runs-on: ubuntu-latest
@@ -56,14 +53,6 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - run: >
-          docker buildx build
+          bash scripts/ci-container.sh
           --cache-from=type=gha
           --cache-to=type=gha,mode=max
-          --load
-          --tag ytdlp-http-wrapper:local
-          .
-
-      - name: Check Compose configuration and tmpfs containment
-        run: |
-          docker compose config --quiet
-          docker compose run --rm --no-deps -T --entrypoint /bin/sh ytdlp -eu < scripts/container-smoke.sh

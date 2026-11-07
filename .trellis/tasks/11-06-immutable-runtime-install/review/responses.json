@@ -1,0 +1,28 @@
+{
+  "round": 1,
+  "scope_summary": "Stage 3 completed to a Windows-validated checkpoint under the locked single-runtime design, then stopped for independent code review. Existing boot/data wiring and facade signatures were audited and preserved. Updated help/operations, added focused config coverage, and fixed stable boot-error rendering. No acceptance verdict; Linux/CI/release/container, live rollout and single owner delivery-commit history remain pending.",
+  "changes": [
+    {
+      "file": "src/main.rs",
+      "intent": "Clarify private-root/worker override/version help. Add private default/env/flag precedence, no-retry mismatch and real fixture handshake tests for runtime paths, explicit overrides, additive package ordering and version/identity forwarding. Preserve production boot ordering and data-only wiring.",
+      "spec_clause": "design.md sections 2, 3, 7, 8, 9, 10, 11"
+    },
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Use the existing coded Display for RuntimeInstallError Debug so Result-returning main prints stable RUNTIME_* codes. A native executable probe demonstrated the previous derived variant-only output; no lifecycle/resolution/retry logic or test seams changed.",
+      "spec_clause": "design.md section 10"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Add offline installation/reuse regression for an equal explicit worker/runtime version while retaining single-layout assertions and all prior tests.",
+      "spec_clause": "design.md sections 7, 8, 11"
+    },
+    {
+      "file": "README.md",
+      "intent": "Document distinct standalone CLI and Python/wheel resident artifacts, embedded worker, exact options, full-identity reuse limits, fixed runtime/staging layout, source prerequisites and unverified live pins; accepted private-root stop/await/start A8 and gap/reinstall A9, no history/backup/fallback or legacy/foreign-staging sweep.",
+      "spec_clause": "design.md sections 1, 4, 5, 6, 7, 8, 9, 12"
+    }
+  ],
+  "test_notes": "Native Windows final-tree gates, in order: cargo fmt --check exit 0; cargo clippy --locked --all-targets -- -D warnings exit 0; cargo test --locked exit 0 (105 passed, 0 failed, 6 existing subprocess-fixture entries ignored; lib 30, main 5 including a child-fixture entrypoint, runtime_install 16); python -m unittest tests.test_ytdlp_worker -v exit 0 (14 tests). Fresh cargo build --locked --bin ytdlp-http-wrapper exit 0; supplied its absolute target/debug executable through existing CARGO_BIN_EXE_ytdlp-http-wrapper harness variable. Native CLI and resident mismatch probes exit 1 with RUNTIME_VERSION_MISMATCH and attempt=1, roots absent. Prerequisites: rustc/cargo 1.96.0, Python 3.14.0, bsdtar 3.7.7 and local Cargo cache. All fixture sources offline; no actual upstream runtime execution or live downloads. First full test attempt exited 101 because the newly added fixture omitted its required binary SHA256; supplied actual fixture digest, focused test exit 0 (1 passed/15 filtered), without weakening assertions. An intermediate 105-test run exited 0 before the Debug-output fix; the final four gates were rerun after that fix and fresh build. All 31 immutable SHA256s match stage3-start.json; backend/lib starting bytes preserved. Exact production anchors, suite counts, commands, six final writable hashes and log directory appended to implement-progress.md. Scoped diff check exit 0; whole-tree diff check exit 2 for unchanged recorded frozen whitespace only. Native Linux/Unix failure/sync/link/permission and official-binary smoke evidence, CI/release/container, independent review, A1-A6 live-default/trust rollout confirmation and AC1 single-delivery-commit history remain pending. No Git staging/commit/push, remote host, deployment, real-root cleanup, frozen-document/contract edits or task lifecycle change.",
+  "finding_responses": []
+}

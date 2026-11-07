@@ -5,5 +5,6 @@ pub mod resident_worker;
 pub mod resident_worker_manager;
 pub mod resident_worker_pool;
 pub mod routes;
+pub mod runtime_installer;
 mod supervisor;
 pub mod worker_protocol;

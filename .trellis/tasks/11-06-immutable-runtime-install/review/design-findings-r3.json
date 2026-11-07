@@ -1,0 +1,67 @@
+{
+  "done": false,
+  "verdict": "FAIL",
+  "round": 3,
+  "design_sha256": "BC19B71C241D00F3D260B20E6C287BB4335F079EDAD410F0500C1B2DE0364E4D",
+  "base_commit": "c08f398",
+  "reviewer": "design-reviewer",
+  "reviewed_at": "2026-11-07",
+  "criteria": {
+    "D1": "met",
+    "D2": "met",
+    "D3": "met",
+    "D4": "gap",
+    "D5": "met",
+    "D6": "gap",
+    "D7": "gap",
+    "D8": "met"
+  },
+  "summary": "Full D1-D8 review of the owner-amended revision, not a round-2 closure check. The computed hash matches the brief and approval record. The amended dependency rule is reflected in prd.md; the bin/ deviation is acknowledged; runtime-id includes the worker hash; and the early reuse check is consistent with the three-fetch assertion. The design cannot yet be locked: staging cleanup weakens the inherited ownership boundary, acceptance coverage omits existing-runtime corruption and the single-commit requirement, error mappings are not unambiguous, and A6 has lost its inline marker. No cargo command, build, or test suite was run.",
+  "assumptions_for_human_review": [
+    "A1: Default PBS release tag 20261026 and CPython 3.13.18. Definition: design.md section 12, line 479. Inline marker: section 5 source 2, line 232. Inline marker count: 1; exactly once: yes.",
+    "A2: GitHub API per-asset SHA256 is the production PBS trust anchor without an operator plan; signature verification is out of scope. Definition: design.md section 12, lines 480-482. Inline marker: section 5 source 2, lines 246-248. Inline marker count: 1; exactly once: yes.",
+    "A3: 512 MiB per-artifact cap, 300-second attempt timeout, and three attempts with 2s/4s backoff for download-class failures. Definition: design.md section 12, lines 483-484. Inline marker: section 5 download mechanics, line 265. Inline marker count: 1; exactly once: yes.",
+    "A4: System tar is available on Windows and Linux deployment targets. Definition: design.md section 12, lines 485-486. Inline marker: section 5 tar extraction paragraph, line 270. Inline marker count: 1; exactly once: yes.",
+    "A5: The default yt-dlp version is the explicit, overridable pin 2026.09.23, never latest. Definition: design.md section 12, lines 487-488. Inline marker: section 7 configuration table, line 333. Inline marker count: 1; exactly once: yes.",
+    "A6: A pinned wheel plus ZIP extraction suffices for the Python closure because yt-dlp has no hard runtime dependencies; future hard dependencies would require additional wheel entries. Definition: design.md section 12, lines 489-492. Inline marker: absent; the relevant bite point is section 5 wheel/RECORD paragraphs, lines 271-279. Inline marker count: 0; exactly once: no. See G5.",
+    "Additional traceability suspects: section 8 step 5 replaces manifest-validated cleanup with a marker-only rule without identifying an authorized deviation (G1); sections 5, 7, and 10 do not establish one authoritative error mapping, including the missing-wheel-digest outcome (G3). The section 0 owner decisions themselves are not reopened."
+  ],
+  "blocking_findings": [
+    {
+      "id": "G1",
+      "criterion": "D7",
+      "design_locator": "design.md section 4 staging layout, lines 127-130, and section 8 steps 5, 8, and 9, lines 368-382; conflicting yardsticks: prd.md requirement 3, lines 27-33, and parent .trellis/tasks/11-03-resident-worker-runtime-upgrade/design.md section 6, lines 194-206.",
+      "gap": "The inherited cleanup boundary permits deletion only of owned, manifest-validated paths. Section 8 instead makes RUNTIME_STAGING_OWNER the only documented eligibility check for sweeping old staging directories, while the manifest is written only after installation completes. Neither validated ownership metadata for partial staging nor an explicit, justified deviation is specified. The same section supports simultaneous boots but does not say how the sweep distinguishes a crashed boot's marked directory from another boot's live marked directory. An implementation following the marker-only rule can violate the required cleanup boundary and interfere with the publication race the design explicitly supports.",
+      "verification": "Reconcile section 8's cleanup rule with prd.md requirement 3 and parent section 6. Specify the ownership validation and stale-versus-live determination required before a staging directory can be removed, and explicitly identify and justify any intended boundary deviation. Re-reading sections 4 and 8 must establish that a marker alone cannot authorize deletion of an unvalidated or concurrently active directory."
+    },
+    {
+      "id": "G2",
+      "criterion": "D6",
+      "design_locator": "design.md section 11 AC3 rows, lines 465 and 467, versus section 8 step 4, lines 356-363; yardstick: prd.md AC3, lines 68-70, and requirement 8, lines 55-57.",
+      "gap": "Neither row labeled AC3 exercises rejection of a corrupt or manifest-mismatched existing versions/<id>. A wrong plan hash tests initial installation failure, and changing artifact content derives a new id, bypassing the existing-id reuse check. Both tests can pass even if reuse never checks the existing manifest or retained archives. The amended reuse-integrity policy therefore has no offline acceptance check for the central AC3 condition or for leaving the rejected directory unchanged.",
+      "verification": "Add explicit offline assertions that first install a valid runtime, then separately corrupt a retained archive and mismatch its manifest, and retry with the original plan and expected id. Specify the required structured rejection and a before/after comparison proving the existing directory is not repaired or mutated. Re-reading section 11 must show these cases reach section 8 step 4 rather than derive a different id. This does not require re-hashing the extracted Python tree."
+    },
+    {
+      "id": "G3",
+      "criterion": "D4",
+      "design_locator": "design.md section 5 source 3 and download mechanics, lines 249-279; section 7 worker-version row, line 339; section 8 retry paragraph, lines 387-389; section 10 error table, lines 434-440. Yardstick: prd.md requirements 4 and 6, lines 34-47, requiring actionable structured failures and bounded retry.",
+      "gap": "The design does not trace several failure conditions to one authoritative outcome. Missing curl is RUNTIME_DOWNLOAD_FAILURE in section 5 but RUNTIME_CURL_MISSING in section 10; missing tar is RUNTIME_EXTRACT_FAILURE in section 5 but RUNTIME_CURL_MISSING in section 10; a worker-version mismatch is assigned both RUNTIME_CONFIG_INVALID and RUNTIME_VERSION_MISMATCH in section 10, while section 7 selects the latter. The curl conflict also changes retry behavior because section 8 retries only download-class errors. In addition, the amended wheel policy makes the archive SHA256 the integrity anchor, but source 3 specifies only zero/multiple-wheel rejection, not the fail-closed code for exactly one wheel with absent or unusable digests.sha256; section 10 does not resolve that case. Downstream cannot choose stable codes and retry behavior without making additional design decisions.",
+      "verification": "Align the body and error table so missing curl, missing tar, and worker-version mismatch each have exactly one code and a consistent retry classification. Add an explicit absent/unusable-wheel-digest rule. Re-read sections 5-8 and 10 to confirm that every absent-checksum path (binary after API/SUMS exhaustion, PBS, wheel, and plan) has one fail-closed outcome and no conflicting table entry."
+    },
+    {
+      "id": "G4",
+      "criterion": "D6",
+      "design_locator": "design.md section 2 Cargo and boot change rows, lines 85-90, and section 11 AC1 row, line 468; yardsticks: prd.md requirement 1, lines 17-20, and AC1, lines 60-63.",
+      "gap": "The AC1 landing point checks only the resulting dependency graph and Cargo.toml text. It cannot falsify the requirement that dependency/patch removal and the new sole boot installer ship in the same commit. A history that removes the old installer in one commit and wires the replacement in another satisfies every check currently listed. No commit-level check or documented mechanical procedure for this part of AC1 appears in the design.",
+      "verification": "Extend the AC1 landing point with an offline commit-level review procedure and explicit assertions binding the installer implementation, boot replacement, LibraryInstaller removal, Cargo.toml dependency/patch removal, and corresponding lockfile changes to one commit. Re-reading section 11 must show how a split-commit delivery would fail acceptance even when the final tree passes metadata checks."
+    },
+    {
+      "id": "G5",
+      "criterion": "D4",
+      "design_locator": "design.md section 5 wheel/RECORD paragraphs, lines 271-279, and section 12 A6, lines 489-492; yardsticks: prd.md requirements 5-7, lines 38-54, plus the D4 requirement to mark decisions not established by those requirements.",
+      "gap": "Section 12 lists exactly A1-A6, but the amended wheel/RECORD paragraphs have no inline [ASSUMPTION A6] marker. A1-A5 each appear inline once; A6 appears zero times. The assertion that a single pinned wheel plus ZIP extraction supplies the complete resident Python closure is not guaranteed by the PRD's general-purpose-crate allowance or integrity requirement, and its assumption status is no longer marked where the implementation relies on it.",
+      "verification": "Restore one inline [ASSUMPTION A6] marker at the section 5 paragraph relying on the pinned wheel/ZIP closure, retaining the amended policy against hand-written RECORD parsing. Re-reading sections 5 and 12 must show the same assumption in both places, with exactly one inline marker for each of A1-A6."
+    }
+  ],
+  "escalation_reason": ""
+}

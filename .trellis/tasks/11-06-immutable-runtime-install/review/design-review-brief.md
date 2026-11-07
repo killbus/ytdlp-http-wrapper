@@ -1,3 +1,11 @@
+> SUPERSEDED (2026-11-07). This is the round-1 brief for the pre-amendment
+> design. The owner amended design.md (section 0, sha256 BC19B71C...), so the
+> current brief for this unit is
+> `.trellis/tasks/11-06-immutable-runtime-install/design-reviewer-brief.md`
+> (round 3, full D1-D8 pass). This file is kept only as the round-1 record.
+> Note it contains the "your profile notes" anti-pattern (SOP R1) that the
+> new brief replaces with inlined profile notes.
+
 # Design Review Brief -- 11-06-immutable-runtime-install (round 1)
 
 ## Your task

@@ -1,0 +1,214 @@
+{
+  "recorded_at": "2026-11-07T11:24:37.2281943+08:00",
+  "source_baseline": "775bd5fa974f1008bb24e71ea92f674515706948",
+  "branch": "feature/resident-worker-runtime-upgrade",
+  "design_sha256": "DD08291438B125AC99056823DE96D077435B1CCA0D20973D654459EFCBEAAD59",
+  "assigned_stage": 1,
+  "provider": "codex",
+  "model": "remote-magpie/auto/gpt-6-astra",
+  "profile_settings": {
+    "thinkingOptionId": "xhigh",
+    "modeId": "auto-review"
+  },
+  "frozen_inputs": [
+    {
+      "sha256": "DD08291438B125AC99056823DE96D077435B1CCA0D20973D654459EFCBEAAD59",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/design.md"
+    },
+    {
+      "sha256": "1A87CA82F303F0A19D7E0480F5D2619802DFD2DB74893FCD23CDA9A713B0C973",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/prd.md"
+    },
+    {
+      "sha256": "AEE99393612762141BD61C6C9B551C821843DEE8780E5E7B72A707DDAF496B43",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/approval.md"
+    },
+    {
+      "sha256": "C2316B9106186DD269974F2B3EFDEB4C8CD1CBA192EC917F65D0382C6576E62D",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implement.md"
+    },
+    {
+      "sha256": "C0AE7791D3B8B5A90390C3D167F05353ED352A2ED1CB1FAEED86E2093F1F9698",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implementer-brief.md"
+    },
+    {
+      "sha256": "4A4E55E6FA351B6C55DF5172270CE71425B2568F4710D7BDA3755DADD62FBB52",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implement.jsonl"
+    },
+    {
+      "sha256": "4A4E55E6FA351B6C55DF5172270CE71425B2568F4710D7BDA3755DADD62FBB52",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/check.jsonl"
+    },
+    {
+      "sha256": "5EFF653373C66E9F66AE23C8D9836CC386AAB1E71C1AF8B5B08066020CECB6E5",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/owner-decisions.md"
+    },
+    {
+      "sha256": "354E0717462563659737D0C6BAD3C488C128C26856D219571C888DA04C8983C5",
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/design-findings.json"
+    },
+    {
+      "sha256": "5F03BFFE1278A032BBD1A430F629E9B011EB2F52A8AE76FB7C51CABE287D3229",
+      "path": ".trellis/spec/wrapper/backend/index.md"
+    },
+    {
+      "sha256": "DAC311068B7B544C4B004226E38583092EEA9B90B7419ECD9A469263FC587F6E",
+      "path": ".trellis/spec/wrapper/backend/process-lifecycle.md"
+    },
+    {
+      "sha256": "5FAEAE6D5FC1EDA4EDC9FA3E774CA847D189CBC014EE154396BF7BE56831B000",
+      "path": ".trellis/spec/wrapper/backend/dependency-sources.md"
+    },
+    {
+      "sha256": "AC528D8CADD614A951C9E8BF985F413730FBC826ADFECA4564D5ED124BE592A2",
+      "path": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/design.md"
+    }
+  ],
+  "stage_writable_before": [
+    {
+      "sha256": "2E6CECE55D21691E94753B1A749521FAB783635722C36F70FDB1993043115954",
+      "path": "src/runtime_installer.rs"
+    },
+    {
+      "sha256": "319309CDF7F36B72FE9FC5BDC2FF34D0CA2BCA2E30023E78DFB3B3108AB1BA86",
+      "path": "tests/runtime_install.rs"
+    }
+  ],
+  "preserved_files": [
+    {
+      "sha256": "36C2B38796983C90233FD9E5C6B4B6D6079A2A621CE98FFEA5EE33B784DF7FEB",
+      "path": "src/main.rs"
+    },
+    {
+      "sha256": "E002DCB553BABA7B7EC8E0B82DBEC18281C8C9B7286CCE8533710E340C2E76D8",
+      "path": "src/backend.rs"
+    },
+    {
+      "sha256": "E4457D7D9CCC64158FBA92B9BA7A2EE75640B652A5CA965341E8B2DB5FFB8BF1",
+      "path": "src/lib.rs"
+    },
+    {
+      "sha256": "80E8D2E75E2AC39EDF5EFD21133A8F689B153370187550E92A675ABCE6CD7F9C",
+      "path": "Cargo.toml"
+    },
+    {
+      "sha256": "54552A42182C91E0104C73F07616F2BB8D2BB4ED772D4610168D3DD64A9905D1",
+      "path": "Cargo.lock"
+    },
+    {
+      "sha256": "D3AC937F19FD2445FE32585AA04614A712D9A3BD3E74B19A16F889AD688EABB2",
+      "path": "README.md"
+    },
+    {
+      "sha256": "20968034D14454812ABCFD9B4474DD314F5A5DC99FCD211583CD8FD870A44BD0",
+      "path": "src/resident_worker.rs"
+    },
+    {
+      "sha256": "D7F2A7453D769F7C938190823834F7394B854DC0D02830DB9BEA5E69D5994A01",
+      "path": "src/resident_worker_pool.rs"
+    },
+    {
+      "sha256": "3AEF5A816B7391D2EBE2BA6CBEF206F4C7FAE8D66941BCA959624CF210A7B392",
+      "path": "src/resident_worker_manager.rs"
+    },
+    {
+      "sha256": "AE65484DF047401949B17081214E7D7FAD88E7C69F48769FE779BA92623A2F90",
+      "path": "src/executor.rs"
+    },
+    {
+      "sha256": "364C506F6A5805FAC572B76EB1A8E1A82066CBB92DDE1C95320D496F87F39CA8",
+      "path": "src/supervisor.rs"
+    },
+    {
+      "sha256": "DE42DED79B2283216FFD16BE2E4188FB358EABD901678A15B9D0876D97C99847",
+      "path": "src/routes.rs"
+    },
+    {
+      "sha256": "3A8779668CFA0976E9C2DA1B6ADD9D307C6271215C55039CBADB7AAB2121E385",
+      "path": "src/worker_protocol.rs"
+    },
+    {
+      "sha256": "21C77F10DA0E87BCD62E29EF39702F259F4BE5A564D289CA4458384AA0CB5FF3",
+      "path": "worker/ytdlp_worker.py"
+    },
+    {
+      "sha256": "1E4FA6892436C8893A7D5BE389D92952CFEE87268BCA9B3953C393C941CD831E",
+      "path": "tests/run_contract.rs"
+    },
+    {
+      "sha256": "F3F802ED5562B5B9D7D4A0E8388C437CC6EB484252E792CEBE7795D8702A0602",
+      "path": "tests/backend_contract.rs"
+    },
+    {
+      "sha256": "AAB3B10321EB881A4089508B2B2CB491B6A1BC552AE59E18081E4A6B443D5489",
+      "path": "tests/resident_backend.rs"
+    },
+    {
+      "sha256": "0DBDD02B77B45CC324EA426E7D339F387D2CC41F8893FE7E9AD0AC6FFB30B556",
+      "path": "tests/resident_worker.rs"
+    },
+    {
+      "sha256": "5917D5C583B331BA8AB7A99274A962838C83AAA95FDAFA586AE85627BEBD311C",
+      "path": "tests/resident_worker_manager.rs"
+    },
+    {
+      "sha256": "31DF1E81185F21FCCA2B471A4B1771CA5C4AFA902DF704626AC461836BF78D8B",
+      "path": "tests/resident_worker_pool.rs"
+    },
+    {
+      "sha256": "CAFAD5D541CCAC0DF2544827EFF9A539A4D121E699685D3CC39E713C338C2F48",
+      "path": "tests/worker_protocol_interop.rs"
+    },
+    {
+      "sha256": "5D3D030A413E745679B953EEEFDF4773E2F2BFB87754318984D808F455C5DE00",
+      "path": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/task.json"
+    }
+  ],
+  "existing_git_status": [
+    " M .trellis/tasks/11-03-resident-worker-runtime-upgrade/task.json",
+    " M .trellis/tasks/11-06-immutable-runtime-install/approval.md",
+    " M .trellis/tasks/11-06-immutable-runtime-install/check.jsonl",
+    " M .trellis/tasks/11-06-immutable-runtime-install/design.md",
+    " M .trellis/tasks/11-06-immutable-runtime-install/implement.jsonl",
+    " M .trellis/tasks/11-06-immutable-runtime-install/prd.md",
+    " M .trellis/tasks/11-06-immutable-runtime-install/review/design-findings.json",
+    " M .trellis/tasks/11-06-immutable-runtime-install/review/design-review-brief.md",
+    " M Cargo.lock",
+    " M Cargo.toml",
+    " M src/backend.rs",
+    " M src/lib.rs",
+    " M src/main.rs",
+    "?? .claude/",
+    "?? .opencode/",
+    "?? .tmp-baseline-tests.log",
+    "?? .trellis/spec/mpd/",
+    "?? .trellis/spec/myMPD/",
+    "?? .trellis/tasks/00-bootstrap-guidelines/",
+    "?? .trellis/tasks/11-03-bump-yt-dlp-2-10/",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/design-reviewer-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/design-reviser-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/design-single-runtime-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/design-single-runtime-review-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/implement.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/implementer-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/design-findings-r3.json",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/design-findings-r4.json",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/design-r4.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/design-review-r4-brief.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/design-revisions.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/implement-plan-before-single-runtime.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/implement-progress.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/implementer-brief-before-single-runtime.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/owner-decisions.md",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/responses-before-single-runtime.json",
+    "?? .trellis/tasks/11-06-immutable-runtime-install/review/responses.json",
+    "?? docs/superpowers/",
+    "?? examples/",
+    "?? response.json",
+    "?? src/runtime_installer.rs",
+    "?? tests/runtime_install.rs",
+    "?? todos/001-release-automation.md",
+    "?? todos/002-performance-incidents/"
+  ],
+  "notes": "Snapshot before Stage 1. Existing dirty task docs/source changes are known; preserve all unrelated work. Design PASS and source baseline are not implementation acceptance."
+}

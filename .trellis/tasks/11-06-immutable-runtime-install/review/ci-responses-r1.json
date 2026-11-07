@@ -1,0 +1,58 @@
+{
+  "round": 1,
+  "scope_summary": "Implemented the bounded additive CI extension: shared host fixture gates and release entrypoint, separate official Linux artifact preparation/smoke and container scripts, thin existing workflow, documentation and offline script tests. Installer/source/contracts/design and previous review records are unchanged. Native Linux, hosted CI, real upstream smoke, container/release execution, A1-A6 rollout checks and AC1 delivery history remain pending; stop for independent CI-delta review.",
+  "changes": [
+    {
+      "file": "scripts/ci.py",
+      "intent": "Run shared fmt, locked strict all-target Clippy, a current host binary build with Cargo-reported absolute executable injected into Rust test child env, locked Rust tests, Python worker suite and script tests; expose locked release entrypoint; fail on missing tools or ineffective Linux permission denials.",
+      "spec_clause": "ci-implementation-brief.md plan items 1-3, 7; design.md section 11"
+    },
+    {
+      "file": "scripts/ci.sh",
+      "intent": "Retain compatible Bash entrypoint as argument/exit forwarding only, without a duplicate gate list.",
+      "spec_clause": "ci-implementation-brief.md plan item 1; design.md section 11"
+    },
+    {
+      "file": "scripts/ci-linux-smoke.sh",
+      "intent": "Preserve default official release selection with optional exact tag, download into a fresh private directory, require and verify the exact binary SHA256 before chmod/execution, print tag/hash, call consumer and clean only owned contained artifacts.",
+      "spec_clause": "ci-implementation-brief.md plan item 4; design.md section 11"
+    },
+    {
+      "file": "scripts/linux-smoke.sh",
+      "intent": "Keep no-download consumer and ignored smoke while requiring native x86_64 Linux, an absolute executable, repository cwd and explicit native Rust host target.",
+      "spec_clause": "ci-implementation-brief.md plan item 4; design.md section 11"
+    },
+    {
+      "file": "scripts/ci-container.sh",
+      "intent": "Build/load existing local tag, verify Compose and invoke unchanged in-container assertions; accept only optional cache arguments, never publish or start production runtime installation.",
+      "spec_clause": "ci-implementation-brief.md plan item 5; design.md section 11"
+    },
+    {
+      "file": ".github/workflows/ci.yml",
+      "intent": "Retain triggers, concurrency, matrix and rust/docker jobs with Python setup, repository rustup selection/components, caches and short script calls; explicitly restrict token to contents:read.",
+      "spec_clause": "ci-implementation-brief.md plan items 3, 6; design.md section 11"
+    },
+    {
+      "file": "scripts/tests/test_ci.py",
+      "intent": "Cover gate order, failure propagation, current Cargo artifact selection, child-only env, cwd, prerequisites, Linux denial preconditions and host release build using stdlib mocks.",
+      "spec_clause": "ci-implementation-brief.md plan item 7; design.md section 11"
+    },
+    {
+      "file": "scripts/tests/test_shell_ci.py",
+      "intent": "Offline shell-stub coverage for checksum fail-closed behavior, release selection, cleanup, platform/host checks, container calls/cache restriction and wrapper forwarding.",
+      "spec_clause": "ci-implementation-brief.md plan item 7; design.md section 11"
+    },
+    {
+      "file": "scripts/README.md",
+      "intent": "Document exact entrypoints, prerequisites, fixture/acquisition separation, networked smoke/build boundaries, evidence expectations and non-claims.",
+      "spec_clause": "ci-implementation-brief.md plan item 7; design.md section 11"
+    },
+    {
+      "file": "README.md",
+      "intent": "Update Development commands and link validation guide; all accepted operational text preserved.",
+      "spec_clause": "ci-implementation-brief.md plan item 7; design.md section 11"
+    }
+  ],
+  "test_notes": "Personally executed on Windows: final python scripts/ci.py script-tests exit 0 (19 tests, 23.168s); absolute script invocation from scripts cwd exit 0 (19 tests, 42.830s). Earlier 17-test runs exited 0. Final Ruff check/format-check, Python AST/LF/whitespace checks, per-script Bash syntax, yq YAML parsing/retained-shape assertions, scoped git diff --check and CLI help all exited 0. Initial Ruff style checks exited 1 and were corrected in new Python files only. Shell tests use offline gh/cargo/rustc/docker stubs under Git Bash, not native Linux/Docker evidence. All 58 frozen SHA256 entries match ci-start.json; reversing only the Development edit reconstructs the starting README hash; HEAD remains baseline. No full Rust reruns, actual release build, hosted CI trigger, live artifact download, Docker daemon call, remote host, Git staging/commit/push or deployment occurred. See review/ci-progress.md for mapping, exclusions and command details.",
+  "finding_responses": []
+}

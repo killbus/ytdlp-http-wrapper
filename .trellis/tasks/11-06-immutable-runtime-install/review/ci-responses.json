@@ -1,0 +1,24 @@
+{
+  "round": 2,
+  "scope_summary": "F1 only: remove unsupported Compose run --no-build and tighten the offline handoff regression. Only scripts/ci-container.sh and scripts/tests/test_shell_ci.py changed as code; this response is overwritten and ci-progress.md is appended. Frozen workflow, Compose/Dockerfile/smoke, shared runner, production source, specs, design, installer review and archives remain untouched. No actual Docker, live download, full Rust rerun, remote host, Git mutation, CI trigger or deployment. Independent round-2 closure and a clean full script-suite run remain pending.",
+  "changes": [
+    {
+      "file": "scripts/ci-container.sh",
+      "intent": "Delete only --no-build from Compose run; preserve the preceding local image build/load/tag, --rm, --no-deps, --pull never, -T, /bin/sh override, ytdlp -eu and byte-identical container-smoke stdin.",
+      "spec_clause": "ci-implementation-brief.md plan items 5-6"
+    },
+    {
+      "file": "scripts/tests/test_shell_ci.py",
+      "intent": "Replace the permissive run logger with a small exact-argv guard linked to the official run interface; correct the expectation, assert exactly five orchestration calls, reject the pre-fix invocation in an isolated temporary copy before consuming smoke stdin, and propagate simulated run/assertion exit statuses 1 and 37 after unchanged stdin. Preserve existing cache/build-stop and smoke/containment coverage; no Compose emulator or timeout changes.",
+      "spec_clause": "ci-implementation-brief.md plan items 5-6"
+    }
+  ],
+  "test_notes": "Personally executed on Windows/Git Bash with PYTHONDONTWRITEBYTECODE=1: python -m unittest scripts.tests.test_shell_ci -v exited 0 (11 tests, 102.980s). python scripts/ci.py script-tests ran twice: exit 1 both times (21 tests each, 117.302s and 202.628s), respectively a 30-second TimeoutExpired in unchanged wrong-Rust-host smoke coverage and unchanged wrong-checksum subcase; all four container test methods completed in both runs. Cause not diagnosed and no unrelated timeout/test changes made. Final ruff check and ruff format --check scripts/tests/test_shell_ci.py --no-cache, Python AST/LF/whitespace checks, Git Bash -n scripts/ci-container.sh, and scoped git diff --check all exited 0; an initial format check exited 1 and its single new copyfile line was wrapped. Mutation hash check exited 0: restoring --no-build in memory recreates the exact starting script SHA256 6D46187D47CEE8CB0000F3B7EB75DF9A13D0557442417B28DB51A6E766C16509, the same mutation exercised in the temporary regression. All 72 frozen hashes match; four writable starting hashes matched at admission. shutil.which(\"docker\") returned None; no real CLI help, daemon, build, smoke assertions or hosted CI were executed. Interface authority is the existing round-1 official CLI source/documentation evidence, not the stub or a fresh network fetch. Detailed command/limit mapping is appended to ci-progress.md.",
+  "finding_responses": [
+    {
+      "id": "F1",
+      "response": "ACCEPTED",
+      "action_or_evidence": "Minimal removal at scripts/ci-container.sh:22 restores the supported run handoff reached from .github/workflows/ci.yml:55; compose.yaml:3 still selects the buildx-loaded local image and unchanged scripts/container-smoke.sh is redirected to /bin/sh via the retained ytdlp -eu override. scripts/tests/test_shell_ci.py:66 cites https://docs.docker.com/reference/cli/docker/compose/run/ and https://github.com/docker/compose/blob/v2.40.3/cmd/compose/run.go#L225. Round-1 evidence locates --no-build on create at https://github.com/docker/compose/blob/v2.40.3/cmd/compose/create.go#L79, not run. The isolated pre-fix regression exits 64 without consuming stdin; the corrected path captures identical smoke bytes and simulated exits 1/37 reach the caller unchanged. These are offline contract/propagation checks only; native Docker/hosted verification and independent review remain pending, and the full local script-suite timeouts are disclosed rather than treated as successful validation."
+    }
+  ]
+}

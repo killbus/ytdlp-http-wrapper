@@ -1,0 +1,318 @@
+{
+  "recorded_at": "2026-11-07T16:04:44.7123156+08:00",
+  "repair_round": 2,
+  "finding": "F1",
+  "source_baseline": "775bd5fa974f1008bb24e71ea92f674515706948",
+  "design_sha256": "DD08291438B125AC99056823DE96D077435B1CCA0D20973D654459EFCBEAAD59",
+  "frozen_files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "700461791CC71BFC802B7DE6CDFAC616DCE20D47FB983F2E578933507B912592"
+    },
+    {
+      "path": ".github/workflows/docker.yml",
+      "sha256": "D82355A545068AD683EADF3F3331E467E96D5DAE871F70DC9B7D37AC0CEC7EAE"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "104B6EE02ED2B15BDF365796D8B34D4E7781CC29C4774B213AD27AFD38CE3652"
+    },
+    {
+      "path": ".trellis/spec/wrapper/backend/dependency-sources.md",
+      "sha256": "5FAEAE6D5FC1EDA4EDC9FA3E774CA847D189CBC014EE154396BF7BE56831B000"
+    },
+    {
+      "path": ".trellis/spec/wrapper/backend/index.md",
+      "sha256": "5F03BFFE1278A032BBD1A430F629E9B011EB2F52A8AE76FB7C51CABE287D3229"
+    },
+    {
+      "path": ".trellis/spec/wrapper/backend/process-lifecycle.md",
+      "sha256": "DAC311068B7B544C4B004226E38583092EEA9B90B7419ECD9A469263FC587F6E"
+    },
+    {
+      "path": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/design.md",
+      "sha256": "AC528D8CADD614A951C9E8BF985F413730FBC826ADFECA4564D5ED124BE592A2"
+    },
+    {
+      "path": ".trellis/tasks/11-03-resident-worker-runtime-upgrade/task.json",
+      "sha256": "5D3D030A413E745679B953EEEFDF4773E2F2BFB87754318984D808F455C5DE00"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/approval.md",
+      "sha256": "AEE99393612762141BD61C6C9B551C821843DEE8780E5E7B72A707DDAF496B43"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/check.jsonl",
+      "sha256": "4A4E55E6FA351B6C55DF5172270CE71425B2568F4710D7BDA3755DADD62FBB52"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/ci-fix-brief.md",
+      "sha256": "4E5451D0AB6369542A4801F06EB7F22D1EB7F95F83EE581BB1E78990BF2B17D3"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/ci-implementation-brief.md",
+      "sha256": "5DF7100199B41265A8119EDDB9A9267D374DB0BDC00FC69A3A76674AAFA5A4D1"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/ci-reviewer-brief.md",
+      "sha256": "05DED5A8BA5824A7A131315A74A955AB287201C632E5F9E7C2AD915AD773D115"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/design.md",
+      "sha256": "DD08291438B125AC99056823DE96D077435B1CCA0D20973D654459EFCBEAAD59"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implement.jsonl",
+      "sha256": "4A4E55E6FA351B6C55DF5172270CE71425B2568F4710D7BDA3755DADD62FBB52"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implement.md",
+      "sha256": "C2316B9106186DD269974F2B3EFDEB4C8CD1CBA192EC917F65D0382C6576E62D"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/implementer-brief.md",
+      "sha256": "C0AE7791D3B8B5A90390C3D167F05353ED352A2ED1CB1FAEED86E2093F1F9698"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/prd.md",
+      "sha256": "1A87CA82F303F0A19D7E0480F5D2619802DFD2DB74893FCD23CDA9A713B0C973"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/acceptance-status.json",
+      "sha256": "CC4E358CB85B0933F0175B0B50AACC2C20DCE4BBE53F565F55E4FFCEE77476A8"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/ci-findings-r1.json",
+      "sha256": "EA5AD92031B980A62C2486F10C15559767FA54C72506B9AABC9E1FD8A4787607"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/ci-findings.json",
+      "sha256": "EA5AD92031B980A62C2486F10C15559767FA54C72506B9AABC9E1FD8A4787607"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/ci-responses-r1.json",
+      "sha256": "14071105E8F80E63230758B1BD522E35F1F580275886140D0262A6A90FFB4225"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/design-findings.json",
+      "sha256": "354E0717462563659737D0C6BAD3C488C128C26856D219571C888DA04C8983C5"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/findings.json",
+      "sha256": "3E3C7EAC4B03D6CB45AC55273ECC7B2155317CF60989F618CB3F640F01E7E882"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/implement-progress.md",
+      "sha256": "EFEA656D2C99115D7CB48BC3BDBA75C7DF04668CFA383DB43305F3456FB1CF8D"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/owner-decisions.md",
+      "sha256": "5EFF653373C66E9F66AE23C8D9836CC386AAB1E71C1AF8B5B08066020CECB6E5"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/responses.json",
+      "sha256": "B1A3CFE97813A92FB8A9A886DE0967C5097C362AFB3D9A13A525EA7CF8467A25"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/reviewer-brief.md",
+      "sha256": "07A07231136BCBC8F7C0257332981278B50267B220EA4994C8439453F75DF4B2"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "54552A42182C91E0104C73F07616F2BB8D2BB4ED772D4610168D3DD64A9905D1"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "80E8D2E75E2AC39EDF5EFD21133A8F689B153370187550E92A675ABCE6CD7F9C"
+    },
+    {
+      "path": "compose.yaml",
+      "sha256": "163C5F49E4A8E9B85B394F093A8ACEFD00F161325626E7D6E9951FA1E4C3C444"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "5406E8400E933F43BC7BC64C20D2468B358D43B7F478332AD4E7D03B7FA32074"
+    },
+    {
+      "path": "README.md",
+      "sha256": "3985AE861B860F468CA376C68BAE08694790A554F43C919B4037125101DBE137"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "0712B25C471B3FECCA01F4B266B4585C7D5A73A71743E1CBFBF9CC3D8ABBB6B8"
+    },
+    {
+      "path": "scripts/ci-linux-smoke.sh",
+      "sha256": "B372E50B492DD8F9944BC26D417DC3406DFCFDB162A230D877C31FF57F738809"
+    },
+    {
+      "path": "scripts/ci.py",
+      "sha256": "E7D126533B32E25553936C85DEC8BC3D2CFE0485D539EE264550C3DC053E457D"
+    },
+    {
+      "path": "scripts/ci.sh",
+      "sha256": "778158B8A1A6262D61DCADFE846222BE5891FE8E9DC96E30B3ACA7D9829CBCD4"
+    },
+    {
+      "path": "scripts/container-smoke.sh",
+      "sha256": "61EBAE2E4987A306F30EA67500AED4F96ADD2C6CC3D148211DC54272342E6AAC"
+    },
+    {
+      "path": "scripts/dev.sh",
+      "sha256": "3991E4E27D4BA34E923F5211783747997693F2EBC90497988AA31409E4D2A46C"
+    },
+    {
+      "path": "scripts/linux-smoke.sh",
+      "sha256": "FC0EBA94C0C4D8F781371DC13E54233B5FF2185C7D5AB0F42057D7E5A83FDD43"
+    },
+    {
+      "path": "scripts/README.md",
+      "sha256": "AEC3202E369F45E3349FD08058732C4CB74EF7328AF25C313B591E7DE5F773EE"
+    },
+    {
+      "path": "scripts/tests/test_ci.py",
+      "sha256": "0963E86FCCA92AD9F0A8B1A86FB9D0BAF30C68C4F5F8A44FBCADF0B7757388FB"
+    },
+    {
+      "path": "src/backend.rs",
+      "sha256": "E002DCB553BABA7B7EC8E0B82DBEC18281C8C9B7286CCE8533710E340C2E76D8"
+    },
+    {
+      "path": "src/executor.rs",
+      "sha256": "AE65484DF047401949B17081214E7D7FAD88E7C69F48769FE779BA92623A2F90"
+    },
+    {
+      "path": "src/lib.rs",
+      "sha256": "E4457D7D9CCC64158FBA92B9BA7A2EE75640B652A5CA965341E8B2DB5FFB8BF1"
+    },
+    {
+      "path": "src/main.rs",
+      "sha256": "535BE7C7AFB46715D90A17C10C39F56CFD9000D8FCDD105E7C1AD49BA4383E1A"
+    },
+    {
+      "path": "src/models.rs",
+      "sha256": "7CCCDD12AB59AD54596C12263EC4BC2E9E02C66516101C32A8AF83965B2E1A3F"
+    },
+    {
+      "path": "src/resident_worker_manager.rs",
+      "sha256": "3AEF5A816B7391D2EBE2BA6CBEF206F4C7FAE8D66941BCA959624CF210A7B392"
+    },
+    {
+      "path": "src/resident_worker_pool.rs",
+      "sha256": "D7F2A7453D769F7C938190823834F7394B854DC0D02830DB9BEA5E69D5994A01"
+    },
+    {
+      "path": "src/resident_worker.rs",
+      "sha256": "20968034D14454812ABCFD9B4474DD314F5A5DC99FCD211583CD8FD870A44BD0"
+    },
+    {
+      "path": "src/routes.rs",
+      "sha256": "DE42DED79B2283216FFD16BE2E4188FB358EABD901678A15B9D0876D97C99847"
+    },
+    {
+      "path": "src/runtime_installer.rs",
+      "sha256": "DC02D29706EF50CC422FC67169E7D7F7E0954FA6F14376D006B9CAD8285F79E4"
+    },
+    {
+      "path": "src/supervisor.rs",
+      "sha256": "364C506F6A5805FAC572B76EB1A8E1A82066CBB92DDE1C95320D496F87F39CA8"
+    },
+    {
+      "path": "src/worker_protocol.rs",
+      "sha256": "3A8779668CFA0976E9C2DA1B6ADD9D307C6271215C55039CBADB7AAB2121E385"
+    },
+    {
+      "path": "tests/backend_contract.rs",
+      "sha256": "F3F802ED5562B5B9D7D4A0E8388C437CC6EB484252E792CEBE7795D8702A0602"
+    },
+    {
+      "path": "tests/fixtures/contract_echo.py",
+      "sha256": "67E2CF9AE7496773A00E2EF28B0DFDE14157A020AEE3EB7CC92C6F740DA01EAB"
+    },
+    {
+      "path": "tests/fixtures/contract_runtime/yt_dlp/__init__.py",
+      "sha256": "1D42B836D9AF1553448998D009B7C2D83BC5612F669A9C5FC547559C14B34C6D"
+    },
+    {
+      "path": "tests/fixtures/resident_worker_handshake.py",
+      "sha256": "E7248D8EAEDB6829E5EEC653C7FF7397AADFE01A06E1DD8F039166C121D75D96"
+    },
+    {
+      "path": "tests/fixtures/resident_worker_runtime.py",
+      "sha256": "0DDC07C1EA3CB21870163E51CCF8E7390BF9C1771EC7D1AD3873ED3F34F1B9C8"
+    },
+    {
+      "path": "tests/fixtures/yt_dlp/__init__.py",
+      "sha256": "B0186987844B90D781E8E59B2BE97641C4B4D0E625A7A8EB8525F98FC56EEAF8"
+    },
+    {
+      "path": "tests/linux_ytdlp_smoke.rs",
+      "sha256": "6ED23082ABA1A7927912F6FC79896A7292B11D5D57C35DFD95570E228ADEC5BF"
+    },
+    {
+      "path": "tests/process_lifecycle.rs",
+      "sha256": "7E7C66484973713430844FF28E153854D5B038C7BD5D66CB133B8B7BB9070AEC"
+    },
+    {
+      "path": "tests/query_deserialization_test.rs",
+      "sha256": "3EE675DC9D76383E62221979A0B342EBB9E5F437B762A6DD6B9AA09D17AF7028"
+    },
+    {
+      "path": "tests/resident_backend.rs",
+      "sha256": "AAB3B10321EB881A4089508B2B2CB491B6A1BC552AE59E18081E4A6B443D5489"
+    },
+    {
+      "path": "tests/resident_worker_manager.rs",
+      "sha256": "5917D5C583B331BA8AB7A99274A962838C83AAA95FDAFA586AE85627BEBD311C"
+    },
+    {
+      "path": "tests/resident_worker_pool.rs",
+      "sha256": "31DF1E81185F21FCCA2B471A4B1771CA5C4AFA902DF704626AC461836BF78D8B"
+    },
+    {
+      "path": "tests/resident_worker.rs",
+      "sha256": "0DBDD02B77B45CC324EA426E7D339F387D2CC41F8893FE7E9AD0AC6FFB30B556"
+    },
+    {
+      "path": "tests/run_contract.rs",
+      "sha256": "1E4FA6892436C8893A7D5BE389D92952CFEE87268BCA9B3953C393C941CD831E"
+    },
+    {
+      "path": "tests/runtime_install.rs",
+      "sha256": "D8F61C143DFB052393F25596E3B683EF69D1663B98EDDE338CE5A19651A905C5"
+    },
+    {
+      "path": "tests/test_ytdlp_worker.py",
+      "sha256": "88B1790911F3F49F3BF2A0B35B58EC10CA2AF326983833A2BC9E9F8CDC4718F8"
+    },
+    {
+      "path": "tests/worker_protocol_interop.rs",
+      "sha256": "CAFAD5D541CCAC0DF2544827EFF9A539A4D121E699685D3CC39E713C338C2F48"
+    },
+    {
+      "path": "worker/ytdlp_worker.py",
+      "sha256": "21C77F10DA0E87BCD62E29EF39702F259F4BE5A564D289CA4458384AA0CB5FF3"
+    }
+  ],
+  "writable_before": [
+    {
+      "path": "scripts/ci-container.sh",
+      "sha256": "6D46187D47CEE8CB0000F3B7EB75DF9A13D0557442417B28DB51A6E766C16509"
+    },
+    {
+      "path": "scripts/tests/test_shell_ci.py",
+      "sha256": "C3D2F26EB991E8434150A28DC6A644750560961BF81270E7BA0FD01F49DAB18B"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/ci-responses.json",
+      "sha256": "14071105E8F80E63230758B1BD522E35F1F580275886140D0262A6A90FFB4225"
+    },
+    {
+      "path": ".trellis/tasks/11-06-immutable-runtime-install/review/ci-progress.md",
+      "sha256": "AD8F2FB2719A29EA4C29AF1D8EBF292DAE57F1CEE962A9DA31475ABDAEA1B92F"
+    }
+  ],
+  "scope": "Supported Compose run invocation and minimal regression only; preserve other CI and installer files",
+  "docker_cli_available": false,
+  "pending": "Real Docker/hosted/native execution not authorized or completed"
+}
