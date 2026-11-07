@@ -390,8 +390,7 @@ async fn resident_worker_shutdown_reports_and_reaps_surviving_descendant() {
     let error = worker
         .shutdown()
         .await
-        .err()
-        .expect("shutdown with a surviving descendant should fail");
+        .expect_err("shutdown with a surviving descendant should fail");
     assert_eq!(error.code(), "WORKER_SHUTDOWN_FAILURE");
 
     let stopped_value =
