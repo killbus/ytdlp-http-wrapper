@@ -31,6 +31,12 @@
   silently substitute latest or another release. Metadata availability and mock
   tests do not establish successful installation: retain real-entrypoint CI boot
   checks in addition to container containment checks.
+- Runtime binary acquisition uses official version-pinned release download URLs
+  and SHA2-256SUMS, not the anonymous GitHub release API. The configured version
+  and platform asset name are already known; API discovery only adds an avoidable
+  shared-IP rate-limit dependency. Require one valid checksum for the exact asset
+  and verify downloaded bytes before publication; never fall back to unchecked
+  installation. Keep explicit source plans and validated offline reuse unchanged.
 - Reuse a validated recorded environment without network resolution; prefer its
   compatible stable base for updates. Keep base interpreters outside replaceable
   runtime/staging trees, and pass the canonical installation root explicitly to
