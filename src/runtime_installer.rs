@@ -490,114 +490,29 @@ fn resolve_live_plan(config: &RuntimeConfig) -> Result<RuntimePlan> {
             "unsupported yt-dlp binary platform",
         )
     })?;
-    let binary = github_release_artifact(
-        "yt-dlp/yt-dlp",
-        &config.yt_dlp_version,
-        binary_name,
-        ArtifactKind::Binary,
-    )?;
-    Ok(new_plan(config, vec![binary]))
-}
-
-fn release_asset<'a>(assets: &'a [JsonValue], name: &str) -> Result<&'a JsonValue> {
-    let mut matching = assets
-        .iter()
-        .filter(|asset| asset.get("name").and_then(JsonValue::as_str) == Some(name));
-    let asset = matching.next().ok_or_else(|| {
-        RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            format!("GitHub release has no asset {name}"),
-        )
-    })?;
-    if matching.next().is_some() {
-        return Err(RuntimeInstallError::new(
-            RuntimeErrorCode::ResolveFailure,
-            format!("GitHub release has ambiguous assets named {name}"),
-        ));
-    }
-    Ok(asset)
-}
-
-fn github_release_artifact(
-    repository: &str,
-    release_tag: &str,
-    asset_name: &str,
-    kind: ArtifactKind,
-) -> Result<ResolvedArtifact> {
-    let body = curl_to_memory(
-        &format!("https://api.github.com/repos/{repository}/releases/tags/{release_tag}"),
-        64 * 1024 * 1024,
-    )?;
-    let value: JsonValue = parse_json(&body, "GitHub release API")?;
-    let assets = value
-        .get("assets")
-        .and_then(JsonValue::as_array)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                format!("GitHub release API response has no assets array: {repository}"),
-            )
-        })?;
-    let asset = release_asset(assets, asset_name)?;
-    let url = asset
-        .get("browser_download_url")
-        .and_then(metadata_url)
-        .ok_or_else(|| {
-            RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                format!("GitHub release API has no download URL for {asset_name}"),
-            )
-        })?;
-    let sha256 = match github_asset_sha256(asset) {
-        Some(digest) => digest,
-        None if repository == "yt-dlp/yt-dlp" => {
-            let sums_url = release_asset(assets, "SHA2-256SUMS")?
-                .get("browser_download_url")
-                .and_then(metadata_url)
-                .ok_or_else(|| {
-                    RuntimeInstallError::new(
-                        RuntimeErrorCode::ResolveFailure,
-                        format!("GitHub release {release_tag} has no SHA2-256SUMS asset"),
-                    )
-                })?;
-            let sums = curl_to_memory(sums_url, 8 * 1024 * 1024).map_err(|mut error| {
-                if error.code == RuntimeErrorCode::DownloadFailure && error.http_status == Some(404)
-                {
-                    error.code = RuntimeErrorCode::ResolveFailure;
-                    error.message = format!("SHA2-256SUMS is missing: {}", error.message);
-                }
-                error
-            })?;
-            parse_sums_sha256(&sums, asset_name)?
-        }
-        None => {
-            return Err(RuntimeInstallError::new(
-                RuntimeErrorCode::ResolveFailure,
-                format!("GitHub release API has no usable sha256 for {asset_name}"),
-            ))
-        }
-    };
-
-    Ok(ResolvedArtifact {
-        name: asset_name.to_owned(),
-        kind,
-        source: match kind {
-            ArtifactKind::Binary => SourceChannel::GithubRelease,
-            ArtifactKind::Wheel => SourceChannel::PyPI,
+    // The version and platform asset are already known; avoid the anonymous API quota.
+    let release_url = format!(
+        "https://github.com/yt-dlp/yt-dlp/releases/download/{}",
+        config.yt_dlp_version
+    );
+    let sums = curl_to_memory(&format!("{release_url}/SHA2-256SUMS"), 8 * 1024 * 1024).map_err(
+        |mut error| {
+            if error.code == RuntimeErrorCode::DownloadFailure && error.http_status == Some(404) {
+                error.code = RuntimeErrorCode::ResolveFailure;
+                error.message = format!("SHA2-256SUMS is missing: {}", error.message);
+            }
+            error
         },
-        resolved_tag: release_tag.to_owned(),
-        url: url.to_owned(),
-        sha256,
-    })
-}
-
-fn github_asset_sha256(asset: &JsonValue) -> Option<String> {
-    asset
-        .get("digest")
-        .and_then(JsonValue::as_str)
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .filter(|digest| is_sha256_hex(digest))
-        .map(str::to_ascii_lowercase)
+    )?;
+    let binary = ResolvedArtifact {
+        name: binary_name.to_owned(),
+        kind: ArtifactKind::Binary,
+        source: SourceChannel::GithubRelease,
+        resolved_tag: config.yt_dlp_version.clone(),
+        url: format!("{release_url}/{binary_name}"),
+        sha256: parse_sums_sha256(&sums, binary_name)?,
+    };
+    Ok(new_plan(config, vec![binary]))
 }
 
 fn parse_sums_sha256(body: &[u8], asset_name: &str) -> Result<String> {
@@ -607,6 +522,7 @@ fn parse_sums_sha256(body: &[u8], asset_name: &str) -> Result<String> {
             format!("SHA2-256SUMS is not UTF-8: {error}"),
         )
     })?;
+    let mut digest = None;
     for line in text.lines() {
         let mut parts = line.split_whitespace();
         let Some(hash) = parts.next() else {
@@ -615,14 +531,23 @@ fn parse_sums_sha256(body: &[u8], asset_name: &str) -> Result<String> {
         let Some(name) = parts.next() else {
             continue;
         };
-        if name == asset_name && is_sha256_hex(hash) {
-            return Ok(hash.to_ascii_lowercase());
+        if name.strip_prefix('*').unwrap_or(name) != asset_name {
+            continue;
         }
+        if !is_sha256_hex(hash) || parts.next().is_some() || digest.is_some() {
+            return Err(RuntimeInstallError::new(
+                RuntimeErrorCode::ResolveFailure,
+                format!("SHA2-256SUMS has an invalid or ambiguous entry for {asset_name}"),
+            ));
+        }
+        digest = Some(hash.to_ascii_lowercase());
     }
-    Err(RuntimeInstallError::new(
-        RuntimeErrorCode::ResolveFailure,
-        format!("SHA2-256SUMS has no usable entry for {asset_name}"),
-    ))
+    digest.ok_or_else(|| {
+        RuntimeInstallError::new(
+            RuntimeErrorCode::ResolveFailure,
+            format!("SHA2-256SUMS has no usable entry for {asset_name}"),
+        )
+    })
 }
 
 fn request_identity(plan: &RuntimePlan) -> JsonValue {
@@ -1695,13 +1620,6 @@ fn required_string<'a>(value: &'a JsonValue, key: &str) -> Result<&'a str> {
         })
 }
 
-fn metadata_url(value: &JsonValue) -> Option<&str> {
-    value.as_str().filter(|url| {
-        url.strip_prefix("https://")
-            .is_some_and(|host_path| !host_path.is_empty() && !host_path.starts_with('/'))
-    })
-}
-
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
         && value.bytes().all(|byte| {
@@ -1950,10 +1868,6 @@ mod tests {
         let mut body = body.as_ref().to_vec();
         body.extend_from_slice(format!("\n{status:03}").as_bytes());
         Reply::Output { body, exit }
-    }
-
-    fn json_response(value: &JsonValue) -> Reply {
-        response(value.to_string(), 200, 0)
     }
 
     fn assert_consumed() {
@@ -2394,14 +2308,6 @@ mod tests {
         assert!(!staging.path.exists());
     }
 
-    fn release_metadata(name: &str, digest: Option<JsonValue>) -> JsonValue {
-        let mut asset = json!({"name": name, "browser_download_url": format!("https://fixtures.invalid/{name}")});
-        if let Some(digest) = digest {
-            asset["digest"] = digest;
-        }
-        json!({"assets": [asset, {"name": "SHA2-256SUMS", "browser_download_url": "https://fixtures.invalid/SHA2-256SUMS"}]})
-    }
-
     fn unusable_digests() -> Vec<Option<JsonValue>> {
         vec![
             None,
@@ -2414,62 +2320,91 @@ mod tests {
     }
 
     #[test]
-    fn release_digest_preference_fallback_and_exhaustion_use_real_resolver() {
+    fn live_resolution_fetches_only_pinned_release_checksums_without_api() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config.clone();
+        config.plan_path = None;
         let name = binary_asset_name().unwrap();
-        let valid = format!("sha256:{}", "A".repeat(64));
-        let _reset = inject(
-            Some(vec![json_response(&release_metadata(
-                name,
-                Some(json!(valid)),
-            ))]),
-            vec![],
-        );
-        let artifact =
-            github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                .unwrap();
-        assert_eq!(artifact.sha256, "a".repeat(64));
-        assert_consumed();
-        for digest in unusable_digests()
-            .into_iter()
-            .chain([Some(json!("sha256:bad")), Some(json!("md5:wrong"))])
-        {
-            let metadata = release_metadata(name, digest.clone());
-            let _reset = inject(
-                Some(vec![
-                    json_response(&metadata),
-                    response(format!("{} {name}\n", "B".repeat(64)), 200, 0),
-                ]),
-                vec![],
-            );
-            assert_eq!(
-                github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                    .unwrap()
-                    .sha256,
-                "b".repeat(64)
-            );
-            assert_consumed();
+        for version in ["2026.09.23", "2026.10.26"] {
+            config.yt_dlp_version = version.into();
+            for marker in [" ", "*"] {
+                let sums = format!(
+                    "{}  other-platform\n{} {marker}{name}\n",
+                    "b".repeat(64),
+                    "A".repeat(64)
+                );
+                let _reset = inject(Some(vec![response(sums, 200, 0)]), vec![]);
+                let plan = resolve_plan(&config).unwrap();
+                assert_eq!(plan.yt_dlp_version, version);
+                assert_eq!(plan.artifacts.len(), 1);
+                let binary = &plan.artifacts[0];
+                assert_eq!(binary.kind, ArtifactKind::Binary);
+                assert_eq!(binary.source, SourceChannel::GithubRelease);
+                assert_eq!(binary.name, name);
+                assert_eq!(binary.resolved_tag, version);
+                assert_eq!(binary.sha256, "a".repeat(64));
+                let release_url =
+                    format!("https://github.com/yt-dlp/yt-dlp/releases/download/{version}");
+                assert_eq!(binary.url, format!("{release_url}/{name}"));
+                INJECTIONS.with(|state| {
+                    let state = state.borrow();
+                    assert_eq!(state.calls.len(), 1);
+                    assert_eq!(
+                        state.calls[0],
+                        [
+                            "-fsSL",
+                            "--retry",
+                            "0",
+                            "--max-time",
+                            "300",
+                            "--max-filesize",
+                            "8388608",
+                            "--write-out",
+                            "\n%{http_code}",
+                            &format!("{release_url}/SHA2-256SUMS"),
+                        ]
+                    );
+                });
+                assert_consumed();
+            }
         }
+    }
+
+    #[test]
+    fn release_checksums_fail_closed_before_staging_or_binary_download() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config.clone();
+        config.plan_path = None;
+        let name = binary_asset_name().unwrap();
+        let valid = format!("{}  {name}\n", "a".repeat(64));
         for body in [
             vec![0xff],
-            b"".to_vec(),
-            b"not-a-hash yt-dlp.exe".to_vec(),
-            format!("{} wrong-name", "b".repeat(64)).into_bytes(),
+            Vec::new(),
+            format!("not-a-hash  {name}\n").into_bytes(),
+            format!("{}  {name}\n", "a".repeat(63)).into_bytes(),
+            format!("{}  {name}\n", "z".repeat(64)).into_bytes(),
+            format!("{}  wrong-name\n", "b".repeat(64)).into_bytes(),
+            format!("{}  {name} extra\n", "a".repeat(64)).into_bytes(),
+            format!("{valid}{valid}").into_bytes(),
+            format!("{valid}{} *{name}\n", "b".repeat(64)).into_bytes(),
+            format!("{valid}invalid  {name}\n").into_bytes(),
         ] {
-            let _reset = inject(
-                Some(vec![
-                    json_response(&release_metadata(name, None)),
-                    response(body, 200, 0),
-                ]),
-                vec![],
-            );
-            assert_eq!(
-                github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                    .unwrap_err()
-                    .code,
-                RuntimeErrorCode::ResolveFailure
-            );
+            let _reset = inject(Some(vec![response(body, 200, 0)]), vec![]);
+            let error = install_with_retry(config.clone()).unwrap_err();
+            assert_eq!(error.code, RuntimeErrorCode::ResolveFailure);
+            assert!(error.message.contains("SHA2-256SUMS"));
+            assert!(error.message.contains("attempt=1"));
+            assert!(!fixture.root().join("staging").exists());
+            assert!(!fixture.root().join("runtime").exists());
             assert_consumed();
         }
+    }
+
+    #[test]
+    fn release_checksum_http_and_transport_error_mapping_is_preserved() {
+        let fixture = Fixture::new();
+        let mut config = fixture.config.clone();
+        config.plan_path = None;
         for (status, exit, code) in [
             (404, 22, RuntimeErrorCode::ResolveFailure),
             (403, 22, RuntimeErrorCode::DownloadFailure),
@@ -2477,130 +2412,14 @@ mod tests {
             (0, 28, RuntimeErrorCode::DownloadFailure),
             (0, 6, RuntimeErrorCode::DownloadFailure),
         ] {
-            let _reset = inject(
-                Some(vec![
-                    json_response(&release_metadata(name, None)),
-                    response([], status, exit),
-                ]),
-                vec![],
-            );
-            let error =
-                github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                    .unwrap_err();
+            let _reset = inject(Some(vec![response([], status, exit)]), vec![]);
+            let error = resolve_plan(&config).unwrap_err();
             assert_eq!(error.code, code);
             assert_eq!(error.http_status, Some(status));
+            assert!(error.message.contains("source=SHA2-256SUMS"));
             assert!(error.message.contains(&format!("exit status Some({exit})")));
             assert_consumed();
         }
-    }
-
-    #[test]
-    fn release_metadata_fail_closed() {
-        let name = binary_asset_name().unwrap();
-        for index in [0, 1] {
-            let mut metadata = release_metadata(name, None);
-            let duplicate = metadata["assets"][index].clone();
-            metadata["assets"].as_array_mut().unwrap().push(duplicate);
-            let _reset = inject(Some(vec![json_response(&metadata)]), vec![]);
-            assert_eq!(
-                github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                    .unwrap_err()
-                    .code,
-                RuntimeErrorCode::ResolveFailure
-            );
-            assert_consumed();
-        }
-        for metadata in [
-            json!({}),
-            json!({"assets": null}),
-            json!({"assets": []}),
-            json!({"assets": [{"name": "wrong"}]}),
-            json!({"assets": [{"name": name}]}),
-            release_metadata(name, None),
-        ] {
-            let mut metadata = metadata;
-            if let Some(assets) = metadata.get_mut("assets").and_then(JsonValue::as_array_mut) {
-                assets.retain(|asset| asset["name"] != "SHA2-256SUMS");
-            }
-            let _reset = inject(Some(vec![json_response(&metadata)]), vec![]);
-            assert_eq!(
-                github_release_artifact("yt-dlp/yt-dlp", "2026.09.23", name, ArtifactKind::Binary)
-                    .unwrap_err()
-                    .code,
-                RuntimeErrorCode::ResolveFailure
-            );
-            assert_consumed();
-        }
-        for invalid_url in [
-            JsonValue::Null,
-            json!(7),
-            json!(""),
-            json!("http://wrong"),
-            json!("https://"),
-        ] {
-            for sums in [false, true] {
-                let mut metadata = release_metadata(
-                    name,
-                    if sums {
-                        None
-                    } else {
-                        Some(json!(format!("sha256:{}", "a".repeat(64))))
-                    },
-                );
-                metadata["assets"][usize::from(sums)]["browser_download_url"] = invalid_url.clone();
-                let _reset = inject(Some(vec![json_response(&metadata)]), vec![]);
-                assert_eq!(
-                    github_release_artifact(
-                        "yt-dlp/yt-dlp",
-                        "2026.09.23",
-                        name,
-                        ArtifactKind::Binary
-                    )
-                    .unwrap_err()
-                    .code,
-                    RuntimeErrorCode::ResolveFailure
-                );
-                assert_consumed();
-            }
-        }
-    }
-
-    #[test]
-    fn live_resolution_only_fetches_the_explicit_binary_release() {
-        let fixture = Fixture::new();
-        let mut config = fixture.config.clone();
-        config.plan_path = None;
-        let name = binary_asset_name().unwrap();
-        let _reset = inject(
-            Some(vec![json_response(&release_metadata(
-                name,
-                Some(json!(format!("sha256:{}", "a".repeat(64)))),
-            ))]),
-            vec![],
-        );
-        let plan = resolve_plan(&config).unwrap();
-        assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(plan.artifacts[0].kind, ArtifactKind::Binary);
-        INJECTIONS.with(|state| {
-            let state = state.borrow();
-            assert_eq!(state.calls.len(), 1);
-            assert_eq!(
-                state.calls[0],
-                [
-                    "-fsSL",
-                    "--retry",
-                    "0",
-                    "--max-time",
-                    "300",
-                    "--max-filesize",
-                    "67108864",
-                    "--write-out",
-                    "\n%{http_code}",
-                    "https://api.github.com/repos/yt-dlp/yt-dlp/releases/tags/2026.09.23",
-                ]
-            );
-        });
-        assert_consumed();
     }
 
     #[test]
@@ -2876,7 +2695,7 @@ mod tests {
     }
 
     #[test]
-    fn only_download_failures_retry_and_metadata_404_exhaustion_stops() {
+    fn only_download_failures_retry_and_checksums_404_exhaustion_stops() {
         let fixture = Fixture::new();
         let mut config = fixture.config.clone();
         config.plan_path = None;
@@ -2887,13 +2706,7 @@ mod tests {
         assert_consumed();
         assert!(!fixture.root().join("runtime").exists());
         assert!(!fixture.root().join("staging").exists());
-        let _reset = inject(
-            Some(vec![
-                json_response(&release_metadata(binary_asset_name().unwrap(), None)),
-                response([], 404, 22),
-            ]),
-            vec![],
-        );
+        let _reset = inject(Some(vec![response([], 404, 22)]), vec![]);
         let error = install_with_retry(config).unwrap_err();
         assert_eq!(error.code, RuntimeErrorCode::ResolveFailure);
         assert!(error.message.contains("attempt=1"));

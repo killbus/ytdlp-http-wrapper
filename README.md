@@ -141,8 +141,11 @@ prepared again before use. There is no history store or old-version fallback.
 
 Native installations need uv 0.11.29 (the deployment pin; other versions require
 validation) and system curl. `--runtime-uv` / `RUNTIME_UV` overrides the executable;
-use an absolute path when not on PATH. Binary acquisition/SHA-256 remains unchanged:
-exact GitHub release metadata, API digest or SHA2-256SUMS, retained verified bytes.
+use an absolute path when not on PATH. Binary acquisition uses the official
+`releases/download/<version>/` URLs for the platform binary and `SHA2-256SUMS`,
+without calling the GitHub release API or requiring a GitHub token. Exactly one
+valid checksum entry for the platform binary is required; missing/invalid/ambiguous
+entries or mismatched downloaded bytes reject installation. Verified bytes are retained.
 uv owns Python/package downloads and installation, not Rust PBS URL/digest tables.
 Boot ignores ambient `UV_*` configuration and project/uv.toml files, uses private
 uv directories, and leaves standard proxy/TLS handling to the tools. curl artifact
