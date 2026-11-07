@@ -564,6 +564,7 @@ fn derive_runtime_id(plan: &RuntimePlan, worker_hash: &str) -> Result<String> {
     let identity = json!({
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "request": request_identity(plan),
+        "python_requirement": python_requirement(&plan.yt_dlp_version),
         "environment": plan.environment,
         "worker_script_sha256": worker_hash,
     });
@@ -574,6 +575,10 @@ fn derive_runtime_id(plan: &RuntimePlan, worker_hash: &str) -> Result<String> {
         plan.yt_dlp_version,
         &sha256_hex(&bytes)[..16]
     ))
+}
+
+fn python_requirement(version: &str) -> String {
+    format!("yt-dlp[default]=={version}")
 }
 
 fn artifact_identity_json(artifact: &ResolvedArtifact) -> JsonValue {
@@ -1175,7 +1180,7 @@ fn prepare_environment(
         .args(["pip", "install", "--python"])
         .arg(&python)
         .args(["--no-python-downloads", "--no-build", "--link-mode", "copy"])
-        .arg(format!("yt-dlp=={}", plan.yt_dlp_version));
+        .arg(python_requirement(&plan.yt_dlp_version));
     if let Some(wheel) = plan
         .artifacts
         .iter()
@@ -1888,12 +1893,13 @@ mod tests {
             let wheel = "yt_dlp-2026.09.23-py3-none-any.whl";
             fs::write(source.join(binary), b"binary").unwrap();
             managed::wheel(&source.join(wheel), "2026.09.23", ">=3.10", "");
+            managed::ejs_wheel(&source.join(managed::EJS_WHEEL));
             let artifacts: Vec<_> = [binary, wheel].iter().map(|name| {
                 let path = source.join(name);
                 json!({"name": name, "url": managed::file_url(&path), "sha256": managed::hash(&path)})
             }).collect();
             let path = directory.path().join("plan.json");
-            fs::write(&path, json!({"schema_version": 2, "offline": true, "yt_dlp": "2026.09.23", "artifacts": artifacts}).to_string()).unwrap();
+            fs::write(&path, json!({"schema_version": 2, "offline": true, "wheelhouse": source, "yt_dlp": "2026.09.23", "artifacts": artifacts}).to_string()).unwrap();
             let config = RuntimeConfig {
                 libs_dir: directory.path().join("libs"),
                 plan_path: Some(path),
@@ -1975,6 +1981,82 @@ mod tests {
         visit(root, root, &mut result);
         result.sort_by(|a, b| a.0.cmp(&b.0));
         result
+    }
+
+    #[test]
+    fn legacy_recipe_same_pin_repairs_with_or_without_existing_ejs_then_reuses_offline() {
+        for bare in [false, true] {
+            let fixture = Fixture::new();
+            let first = fixture.install(WORKER_SCRIPT);
+            let installed = fixture.root().join("runtime");
+            let mut plan: RuntimePlan =
+                serde_json::from_value(read_manifest(&installed).unwrap()["plan"].clone()).unwrap();
+            if bare {
+                // Model the old bare installation without changing its yt-dlp pin.
+                let site = first
+                    .python_path_entries
+                    .iter()
+                    .find(|site| site.join("yt_dlp_ejs").is_dir())
+                    .unwrap();
+                fs::remove_dir_all(site.join("yt_dlp_ejs")).unwrap();
+                fs::remove_dir_all(
+                    site.join(format!("yt_dlp_ejs-{}.dist-info", managed::EJS_VERSION)),
+                )
+                .unwrap();
+                plan.environment["packages"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|package| package["name"] != "yt-dlp-ejs");
+            }
+            let hash = sha256_hex(WORKER_SCRIPT);
+            // This is the baseline identity formula, intentionally without the
+            // installation requirement. Keep the EJS-present case independent
+            // of probe failure so migration cannot pass for the wrong reason.
+            let legacy_identity = json!({
+                "schema_version": MANIFEST_SCHEMA_VERSION,
+                "request": request_identity(&plan),
+                "environment": plan.environment,
+                "worker_script_sha256": hash,
+            });
+            let legacy_id = format!(
+                "yt-dlp-{}-uv-{}",
+                plan.yt_dlp_version,
+                &sha256_hex(&serde_json::to_vec(&legacy_identity).unwrap())[..16]
+            );
+            assert_ne!(legacy_id, first.runtime_id);
+            write_manifest(&installed, &plan, &legacy_id, &hash).unwrap();
+            fs::write(installed.join("old-only"), b"old").unwrap();
+            let before = snapshot(&installed);
+            let mut unavailable = fixture.config.clone();
+            unavailable.uv_path = fixture.directory.path().join("missing-uv");
+            let error = install_with_retry(unavailable.clone()).unwrap_err();
+            assert_eq!(error.code, RuntimeErrorCode::UvMissing);
+            assert_eq!(before, snapshot(&installed));
+            fixture.no_staging();
+
+            let repaired = fixture.install(WORKER_SCRIPT);
+            assert_eq!(repaired, first);
+            assert!(!installed.join("old-only").exists());
+            let manifest = read_manifest(&installed).unwrap();
+            assert_eq!(manifest["plan"]["yt_dlp_version"], plan.yt_dlp_version);
+            assert!(manifest["plan"]["environment"]["packages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|package| package["name"] == "yt-dlp-ejs"
+                    && package["version"] == managed::EJS_VERSION));
+            assert_eq!(fs::read_dir(fixture.root()).unwrap().count(), 4);
+            fixture.no_staging();
+
+            let before = snapshot(&fixture.root());
+            fs::rename(
+                fixture.directory.path().join("source"),
+                fixture.directory.path().join("unavailable-source"),
+            )
+            .unwrap();
+            assert_eq!(install_with_retry(unavailable).unwrap(), repaired);
+            assert_eq!(before, snapshot(&fixture.root()));
+        }
     }
 
     #[test]
@@ -2468,7 +2550,9 @@ mod tests {
                     }
                 }
                 let install = &state.calls[1];
-                assert!(install.iter().any(|arg| arg == "yt-dlp==2026.09.23"));
+                assert!(install
+                    .iter()
+                    .any(|arg| arg == "yt-dlp[default]==2026.09.23"));
                 for flag in [
                     "--no-build",
                     "--link-mode",

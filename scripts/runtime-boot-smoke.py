@@ -7,16 +7,16 @@ import subprocess
 import sys
 import time
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 
 LIBS_DIR = "/downloads/staging"
 
 
-def docker(*args, check=True, timeout=40):
+def docker(*args, check=True, timeout=40, input=None):
     return subprocess.run(
         ["docker", *args], check=check, capture_output=True, text=True,
-        encoding="utf-8", timeout=timeout,
+        encoding="utf-8", timeout=timeout, input=input,
     )
 
 
@@ -65,6 +65,15 @@ def stop(name):
         raise RuntimeError(f"wrapper did not shut down cleanly: {state}")
 
 
+def check_ejs(name):
+    script = Path(__file__).with_name("runtime-ejs-smoke.py").read_text(encoding="utf-8")
+    result = docker(
+        "exec", "--interactive", name, LIBS_DIR + "/runtime/python/bin/python",
+        "-I", "-B", "-", input=script,
+    )
+    print(result.stdout, end="", flush=True)
+
+
 def smoke(image, timeout, version):
     volume = "ytdlp-boot-smoke-" + uuid.uuid4().hex
     names = [volume + "-cli", volume + "-resident"]
@@ -88,6 +97,7 @@ def smoke(image, timeout, version):
             if manifest is not None:
                 if text != manifest or "runtime_reused" not in docker("logs", name).stdout:
                     raise RuntimeError("offline resident restart did not reuse unchanged runtime")
+                check_ejs(name)
             manifest = text
             stop(name)
             print(f"Verified {backend}: {observed}, runtime {current['runtime_id']}", flush=True)

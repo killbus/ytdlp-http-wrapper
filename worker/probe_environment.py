@@ -42,6 +42,17 @@ assert resolved(yt_dlp.__file__).is_relative_to(venv), "yt_dlp escapes venv"
 # PEP 440 normalization belongs to uv; distribution versions can omit date zeros.
 distribution = importlib.metadata.distribution("yt-dlp")
 assert distribution.version, "missing yt-dlp distribution version"
+
+import yt_dlp_ejs
+from yt_dlp_ejs.yt import solver
+
+assert importlib.metadata.version("yt-dlp-ejs"), "missing EJS distribution version"
+for module in (yt_dlp_ejs, solver):
+    assert resolved(module.__file__).is_relative_to(venv), "EJS escapes venv"
+for name in ("lib", "core"):
+    bundle = getattr(solver, name)()
+    assert isinstance(bundle, str) and bundle.strip(), f"missing or empty EJS {name} bundle"
+
 runpy.run_path(str(root / "worker" / "ytdlp_worker.py"), run_name="runtime_probe")
 
 packages = sorted(

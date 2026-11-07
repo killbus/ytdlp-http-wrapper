@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/wrapper/backend/dependency-sources.md", "reason": "Runtime ownership and hosted validation"}
+{"file": ".trellis/spec/wrapper/backend/process-lifecycle.md", "reason": "Preserve lifecycle boundary"}

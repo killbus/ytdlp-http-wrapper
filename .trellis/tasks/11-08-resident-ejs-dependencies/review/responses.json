@@ -1,0 +1,58 @@
+{
+  "round": 1,
+  "scope_summary": "Implemented the locked default-extra runtime recipe and same-pin identity migration, required EJS package/resource probe, separate optional-dependency wheel fixtures and repair/reuse regressions, CI-only offline real-image Deno bundle-load helper with orchestration negatives, and operator/evidence documentation. Excluded request/worker/protocol/pool/supervisor changes, pins, binary acquisition changes, Cargo dependencies, workflows, frozen design/spec edits, local native/uv/Docker execution and Git delivery.",
+  "changes": [
+    {
+      "file": "src/runtime_installer.rs",
+      "intent": "Share the exact yt-dlp[default] requirement between uv installation and derived identity; retain schema 2 and publication flow; update shared-fixture caller and add baseline-formula same-pin migration/failure/offline-reuse tests, including valid EJS already present.",
+      "spec_clause": "design.md sections 3, 4, 6"
+    },
+    {
+      "file": "worker/probe_environment.py",
+      "intent": "Require EJS distribution metadata, in-venv package and solver imports, and nonempty lib/core resources through package APIs; no Deno, installation or network in the production probe.",
+      "spec_clause": "design.md sections 2, 5"
+    },
+    {
+      "file": "tests/fixtures/managed_runtime.rs",
+      "intent": "Model EJS as a distinct synthetic wheel selected only by yt-dlp's default-extra metadata, with deterministic package API resources and a shared wheel writer.",
+      "spec_clause": "design.md sections 3, 6"
+    },
+    {
+      "file": "tests/runtime_install.rs",
+      "intent": "Supply offline EJS wheelhouse; retain mandatory-dependency/unrelated-extra assertions; add missing default-wheel boot rejection and missing package/metadata/solver/resource or empty-resource reuse rejection/repair assertions.",
+      "spec_clause": "design.md sections 3, 5, 6"
+    },
+    {
+      "file": "scripts/runtime-ejs-smoke.py",
+      "intent": "Load installed package bundles in upstream order and execute restricted stdin Deno with an explicit jsc-function marker; reject absent/empty bundles, failed processes and false zero-exit evidence.",
+      "spec_clause": "design.md section 6"
+    },
+    {
+      "file": "scripts/runtime-boot-smoke.py",
+      "intent": "Run the helper through the installed isolated venv Python in the offline resident container, preserving real entrypoint, stopped first boot, unavailable uv, unchanged-manifest/log reuse and cleanup checks.",
+      "spec_clause": "design.md section 6"
+    },
+    {
+      "file": "scripts/tests/test_runtime_ejs_smoke.py",
+      "intent": "Cover package and metadata absence, missing/empty bundles, ordered assembly, restricted Deno arguments, process errors/timeouts and mandatory explicit marker using lightweight mocks.",
+      "spec_clause": "design.md section 6"
+    },
+    {
+      "file": "scripts/tests/test_runtime_boot_smoke.py",
+      "intent": "Assert installed-interpreter stdin handoff, offline resident placement after CLI shutdown and failure propagation with owned cleanup, without relaxing existing boot assertions.",
+      "spec_clause": "design.md section 6"
+    },
+    {
+      "file": "README.md",
+      "intent": "Document upstream default extras, probe capability, same-pin recipe upgrade, first-repair dependency closure and unchanged offline reuse/stop-start ownership.",
+      "spec_clause": "design.md sections 3, 4, 5, 7"
+    },
+    {
+      "file": "scripts/README.md",
+      "intent": "Separate mocked and synthetic fixture evidence from real-image bundle-load evidence and explicitly exclude live challenge, cookies, PO Token, SABR and format guarantees.",
+      "spec_clause": "design.md sections 6, 7"
+    }
+  ],
+  "test_notes": "Local commands: cargo fmt --check initially identified new-code formatting; cargo fmt exited 0 and the subsequent cargo fmt --check exited 0. python -B -m unittest discover -s scripts/tests -p 'test_runtime_*smoke.py' -v exited 0 (13 tests). python -B -m unittest discover -s scripts/tests exited 0 (37 tests, 25.356s; Cargo/Docker shell commands are stubs). Scoped git diff --check exited 0; full path list and final source/JSON/whitespace inspection are recorded in implement-progress.md. No local Rust build/test/Clippy, uv provisioning, Docker, Deno execution, network-dependent test, cookie access or Git delivery ran. Native Linux/Windows regressions and real-image offline EJS/Deno execution remain hosted-CI gates after independent review; this is not live YouTube repair evidence.",
+  "finding_responses": []
+}

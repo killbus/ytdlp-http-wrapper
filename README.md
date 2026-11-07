@@ -114,13 +114,18 @@ interpreters must remain available at their original location for the runtime's
 lifetime. There is no compiled default Python minor series.
 
 Next, `uv pip install --python <venv-python> --no-build --link-mode copy
-"yt-dlp==<explicit-version>"` resolves the package and mandatory dependencies,
-followed by `uv pip check`. No optional extras or source-build backends are enabled.
+"yt-dlp[default]==<explicit-version>"` resolves the package and upstream-recommended
+default dependencies, including the local EJS solver, followed by `uv pip check`.
+Upstream wheel metadata and uv select compatible dependency versions; the wrapper
+does not pin EJS separately. Source-build backends remain disabled.
 uv enforces Requires-Python, Requires-Dist and wheel compatibility against the
 **already chosen interpreter**; it does not search all Python versions to satisfy
 every dependency. Incompatibility rejects boot with uv's diagnostic: correct the
 pin or `--runtime-python`, then restart. There is no automatic version fallback.
 A read-only Python probe imports yt-dlp and loads the worker to check compatibility.
+It also requires EJS distribution metadata, in-venv package/solver imports and
+nonempty `lib()`/`core()` resources. The production probe does not execute Deno or
+solve a YouTube challenge.
 
 Updates prefer the previous validated base interpreter when the Python request
 has not changed, rather than upgrading Python because yt-dlp changed. Base paths
@@ -136,6 +141,15 @@ recorded environment without network metadata, uv resolution, or staging creatio
 uv can even be absent. This does not rehash every Python library/package file or
 lock transitive versions for a fresh rebuild. Missing/corrupt environments are
 prepared again before use. There is no history store or old-version fallback.
+
+The exact `yt-dlp[default]` requirement is part of runtime identity. Existing
+schema-2 runtimes installed with the old bare-package recipe are replaced once at
+boot, even with the same yt-dlp pin. Stop all users of the private libs directory
+before restarting; preserve the volume, cookies mount, explicit pin and resident
+backend setting. No manual volume deletion or hot swap is needed. The first repair
+requires network access or a complete offline wheelhouse; candidate preparation
+failure leaves the old runtime intact but does not admit requests. A repaired,
+unchanged runtime reuses without uv or source/network access.
 
 ### Sources And Prerequisites
 
@@ -176,8 +190,10 @@ pure-Python yt-dlp wheel. Replace example paths/hashes with actual trusted input
 
 `offline` defaults false; `wheelhouse` is optional. Offline sets uv's
 `--offline --no-index`: provision a stable interpreter with `--runtime-python`
-and supply all required wheels. uv checks the explicit version against wheel
-metadata and resolves dependencies. Rust does not parse PEP 440/508. URLs may
+and supply the complete default-extra dependency closure, including EJS wheels.
+Missing wheels fail boot; there is no fallback to bare yt-dlp. uv checks the
+explicit version against wheel metadata and resolves dependencies. Rust does not
+parse PEP 440/508. URLs may
 use https:// or file://; endpoint changes alone do not change artifact identity.
 The wheelhouse is an input source, not a transitive hash lock.
 
