@@ -46,5 +46,5 @@ jobs:
         with:
           bin: ytdlp-http-wrapper
           target: ${{ matrix.target }}
-          archive: $bin-$tag
+          archive: $bin-$tag-$target
           token: ${{ secrets.GITHUB_TOKEN }}

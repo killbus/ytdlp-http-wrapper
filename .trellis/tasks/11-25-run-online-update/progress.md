@@ -81,3 +81,19 @@ no cross-boot staging sweep or power-loss atomicity is claimed.
   (4), targeted Clippy with warnings denied, cargo fmt --check, git diff --check.
   The complete Linux/Windows and container gates will rerun on the rewritten
   feature commit; their results are tracked by GitHub Actions.
+
+## Release preparation
+
+- Rewritten feature commit 1d38649 passed CI 45590901875 on Linux, Windows and
+  Docker; multi-architecture SHA image publication 45590901884 also passed.
+- User requested advancing the release tag and latest. Prepare v1.1.0 as the
+  next minor release after v1.0.0, with synchronized Cargo package/lock versions.
+- Fixed release archive naming to include the target triple: the previous
+  matrix gave four Unix targets the same tarball name, and v1.0.0 had only one
+  Unix tarball plus the Windows zip. Updated the matching download documentation.
+- Release notes are in release-notes.md. Tag publication must follow successful
+  CI for this preparation commit; verify all five release assets and both Linux
+  architectures in latest after publication. Production container deployment is
+  separate from publishing the tag and images.
+- Local release preflight passed: cargo fmt --check, locked/offline Cargo
+  metadata at 1.1.0, five distinct platform archive names, and git diff --check.

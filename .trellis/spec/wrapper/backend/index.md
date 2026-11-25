@@ -26,3 +26,6 @@ are required gates; they do not need to be duplicated locally.
 - `cargo build --release`
 - Run lifecycle tests on both Linux and Windows; compilation is not runtime evidence.
 - Validate container mount options, concurrency/memory budgeting, and shutdown deadline when changing deployment defaults.
+- Release archives must include the target triple in their names so matrix jobs
+  cannot overwrite another platform's binary. Verify all five platform assets
+  and the multi-architecture `latest` manifest after a tag release.

@@ -298,17 +298,22 @@ See [process lifecycle operations](docs/process-lifecycle.md) for memory sizing,
 shutdown, residue migration and Linux validation. These settings take effect
 when the image/configuration is rebuilt and deployed.
 
-### Binary (Linux only)
+### Binary
 
-Download from [GitHub Releases](https://github.com/killbus/ytdlp-http-wrapper/releases):
+Download the archive for your platform from
+[GitHub Releases](https://github.com/killbus/ytdlp-http-wrapper/releases).
+Archives include the release tag and target triple so each platform has its own
+download. For Linux x86_64:
 
 ```bash
-curl -fsSL https://github.com/killbus/ytdlp-http-wrapper/releases/latest/download/ytdlp-http-wrapper-<tag>-x86_64-unknown-linux-gnu.tar.gz \
+curl -fsSL https://github.com/killbus/ytdlp-http-wrapper/releases/download/v1.1.0/ytdlp-http-wrapper-v1.1.0-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz
 ./ytdlp-http-wrapper
 ```
 
-macOS/Windows users should use the Docker image.
+Linux and macOS archives are `.tar.gz`; the Windows x86_64 archive is `.zip`.
+Provide uv and the runtime tools described above when running the binary directly;
+the Docker image includes these dependencies.
 
 ## Development
 
