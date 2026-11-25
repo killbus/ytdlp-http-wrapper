@@ -1,6 +1,9 @@
 # Process Lifecycle
 
 - Each admitted request owns a randomly named `tempfile::TempDir`, a process group (Unix) or JobObject (Windows), and a semaphore permit. Set only the child's TMPDIR/TMP/TEMP; never change the wrapper's environment globally.
+- Windows ownership checks retain canonical paths, but child TMPDIR/TMP/TEMP
+  use normal Win32 syntax (drive paths or UNC without the `\\?\` prefix).
+  PyInstaller fails to create extraction directories with verbatim TEMP paths.
 - Hold resources in a tracked supervisor, independently of the HTTP handler. A closed reply channel requests cancellation; do not assume every network disconnect cancels the handler.
 - Unix termination uses process-wrap's safe `ChildWrapper::signal` API, first SIGTERM then SIGKILL after a bounded grace period. Windows uses immediate JobObject termination.
 - process-wrap 9.1.0 `KillOnDrop` only sets Tokio's direct-child kill-on-drop on Unix. A separate guard must invoke group termination if supervisor cleanup is interrupted.

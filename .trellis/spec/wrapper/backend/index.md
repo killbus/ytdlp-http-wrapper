@@ -8,6 +8,9 @@ This package is the root Rust HTTP wrapper, not `third_party/yt-dlp`.
 - Read [Process lifecycle](process-lifecycle.md) for subprocess changes.
 - Read [Dependency sources](dependency-sources.md) for Cargo patch or build-source changes.
 - Preserve `/run` request and response contracts and the 10 MiB output caps.
+- Query deserialization tests assert extracted args and timeout values directly;
+  verify execution/update routing in `tests/run_contract.rs`. Do not infer parsing
+  success from a missing executable's HTTP 500 response.
 - Keep project code free of unsafe blocks; use safe library APIs.
 - Use tracing for operational failures; never silently swallow cleanup failures.
 

@@ -1,86 +1,48 @@
 #![allow(clippy::unwrap_used)]
 
 use axum::{
-    body::Body,
+    extract::FromRequestParts,
     http::{Request, StatusCode},
+    response::IntoResponse,
 };
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use tower::ServiceExt;
-use ytdlp_http_wrapper::routes;
+use axum_extra::extract::Query;
+use ytdlp_http_wrapper::models::RunRequest;
 
 #[tokio::test]
 async fn test_get_run_deserialization() {
-    let state = Arc::new(routes::AppState::new(
-        PathBuf::from("non_existent_ytdlp_binary"),
-        8,
-        None,
-    ));
-    let app = routes::app(state);
+    for (query, args, timeout_seconds) in [
+        ("/run?args=--update", vec!["--update"], None),
+        ("/run?args=-f&args=best", vec!["-f", "best"], None),
+        (
+            "/run?args=--update&timeout_seconds=45",
+            vec!["--update"],
+            Some(45),
+        ),
+    ] {
+        let (mut parts, ()) = Request::builder().uri(query).body(()).unwrap().into_parts();
+        let Query(request) = Query::<RunRequest>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        assert_eq!(request.args, args, "{query}");
+        assert_eq!(request.timeout_seconds, timeout_seconds, "{query}");
+    }
+}
 
-    // 1. 单参数: GET /run?args=--update
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/run?args=--update")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    // 2. 多参数: GET /run?args=-f&args=best
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/run?args=-f&args=best")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    // 3. 带可选参数: GET /run?args=--update&timeout_seconds=45
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/run?args=--update&timeout_seconds=45")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    // 4. 缺失必填 args 参数: GET /run?timeout_seconds=45
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/run?timeout_seconds=45")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    // 5. 完全为空: GET /run
-    let response = app
-        .clone()
-        .oneshot(Request::builder().uri("/run").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+#[tokio::test]
+async fn missing_args_and_invalid_timeout_are_bad_requests() {
+    for query in [
+        "/run?timeout_seconds=45",
+        "/run",
+        "/run?args=--update&timeout_seconds=invalid",
+    ] {
+        let (mut parts, ()) = Request::builder().uri(query).body(()).unwrap().into_parts();
+        match Query::<RunRequest>::from_request_parts(&mut parts, &()).await {
+            Err(error) => assert_eq!(
+                error.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{query}"
+            ),
+            Ok(_) => panic!("invalid query was accepted: {query}"),
+        }
+    }
 }

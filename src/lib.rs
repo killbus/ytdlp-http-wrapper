@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod executor;
 pub mod models;
+pub mod online_update;
 pub mod resident_worker;
 pub mod resident_worker_manager;
 pub mod resident_worker_pool;

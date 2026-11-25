@@ -17,6 +17,7 @@ pub struct AppState {
     pub semaphore: Arc<Semaphore>,
     pub temp_dir: Option<PathBuf>,
     pub backend: crate::backend::Backend,
+    pub(crate) updater: Option<crate::online_update::OnlineUpdater>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) tasks: TaskTracker,
 }
@@ -28,6 +29,7 @@ impl AppState {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             temp_dir,
             backend: crate::backend::Backend::default_backend(),
+            updater: None,
             shutdown: CancellationToken::new(),
             tasks: TaskTracker::new(),
         }
@@ -53,6 +55,35 @@ impl AppState {
     pub async fn wait_for_cleanup(&self) {
         self.tasks.close();
         self.tasks.wait().await;
+    }
+
+    pub fn with_updates(
+        mut self,
+        config: crate::online_update::UpdateConfig,
+        paths: crate::runtime_installer::RuntimePaths,
+        version: String,
+    ) -> Self {
+        let execution = Arc::new(Self {
+            binary_path: self.binary_path.clone(),
+            semaphore: self.semaphore.clone(),
+            temp_dir: self.temp_dir.clone(),
+            backend: self.backend.clone(),
+            updater: None,
+            shutdown: self.shutdown.clone(),
+            tasks: self.tasks.clone(),
+        });
+        self.updater = Some(crate::online_update::OnlineUpdater::new(
+            config, execution, paths, version,
+        ));
+        self
+    }
+
+    pub async fn stop_backend(&self) {
+        if let Some(updater) = &self.updater {
+            updater.active.read().await.state.backend.shutdown().await;
+        } else {
+            self.backend.shutdown().await;
+        }
     }
 }
 

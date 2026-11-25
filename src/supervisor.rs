@@ -21,6 +21,23 @@ const MAX_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 const TERMINATION_GRACE: Duration = Duration::from_secs(3);
 const REAP_TIMEOUT: Duration = Duration::from_secs(2);
 
+// PyInstaller's Windows bootloader cannot create its extraction directories
+// beneath a verbatim (\\?\) TEMP path returned by canonicalize(). Keep the
+// canonical path for ownership checks, but supply Win32 syntax to the child.
+fn child_temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            return std::path::PathBuf::from(format!(r"\\{unc}"));
+        }
+        if let Some(local) = text.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(local);
+        }
+    }
+    path.to_owned()
+}
+
 pub struct Failure {
     pub code: String,
     pub message: String,
@@ -222,7 +239,7 @@ async fn run(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for key in ["TMPDIR", "TMP", "TEMP"] {
-            cmd.env(key, &temp_path);
+            cmd.env(key, child_temp_path(&temp_path));
         }
     });
     command.wrap(KillOnDrop);
@@ -368,6 +385,28 @@ async fn run(
         stdout: stdout.output(),
         stderr: stderr.output(),
     })
+}
+
+#[cfg(all(test, windows))]
+mod path_tests {
+    use super::child_temp_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn pyinstaller_temp_uses_win32_paths() {
+        assert_eq!(
+            child_temp_path(Path::new(r"\\?\D:\some path\temp")),
+            PathBuf::from(r"D:\some path\temp")
+        );
+        assert_eq!(
+            child_temp_path(Path::new(r"\\?\UNC\server\share\temp")),
+            PathBuf::from(r"\\server\share\temp")
+        );
+        assert_eq!(
+            child_temp_path(Path::new(r"D:\temp")),
+            PathBuf::from(r"D:\temp")
+        );
+    }
 }
 
 fn close_temp(resources: &mut Resources) -> Result<(), Failure> {

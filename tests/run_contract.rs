@@ -107,3 +107,40 @@ async fn malformed_requests_keep_framework_level_bad_request_responses() {
         .unwrap();
     assert_eq!(malformed_json.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn update_aliases_never_fall_through_to_a_download_backend() {
+    for alias in ["--update", "-U"] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/run?args={alias}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body(response).await["code"], "UPDATE_UNAVAILABLE");
+    }
+    for args in [
+        vec!["--update", "https://example.org/video"],
+        vec!["-U", "--version"],
+        vec!["--update-to", "nightly"],
+        vec!["--update-to=stable"],
+    ] {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/run")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"args": args}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body(response).await["code"], "UPDATE_ARGUMENTS");
+    }
+}

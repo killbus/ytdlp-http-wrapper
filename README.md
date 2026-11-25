@@ -33,6 +33,35 @@ Response `200 OK`:
 { "exit_code": 0, "stdout": "...", "stderr": "" }
 ```
 
+`--update` and `-U`, used alone, update the service's managed yt-dlp runtime
+to the latest stable version. Both the standalone binary and Python package
+are updated; resident workers restart before success is returned. For example:
+
+```bash
+curl -s http://localhost:8080/run \
+  -H 'Content-Type: application/json' \
+  -d '{"args":["--update"],"timeout_seconds":300}'
+```
+
+The response reports the old/new version or that yt-dlp is already current.
+Updates wait for running requests and pause new executions until complete.
+Failures return a nonzero exit code; timeouts use `-1`. The old installation
+is restored if installation or worker startup fails. An interrupted update is
+also recovered at the next boot. The request budget includes waiting for active
+requests; stopping processes and restoring the worker can add cleanup latency.
+GET `/run?args=-U&timeout_seconds=300` has the same behavior.
+
+Online selection persists in the runtime manifest across restarts with the same
+deployment pin. Changing `RUNTIME_YTDLP_VERSION` explicitly selects that version.
+For example, after updating from configured version A to B, restarting with A
+keeps B; changing the configured version to C selects C at startup. The configured
+pin is the initial version and selection anchor, so it can differ from the running
+version after an explicit update.
+Keep the libs volume to preserve the selection. Updates require the managed
+runtime with official sources; `RUNTIME_PLAN`, `WORKER_PYTHON` and `WORKER_PATH`
+overrides reject updates explicitly. Combined update/download arguments and
+`--update-to` return HTTP 422. No automatic periodic updates are performed.
+
 Timeouts return HTTP 200 with `exit_code: -1`. The 1–300 second execution
 budget excludes queueing and includes output pipe completion. Termination can
 add 3 seconds of Unix SIGTERM grace plus up to 2 seconds for forced process
@@ -49,7 +78,7 @@ All options accept CLI flags (local dev) or environment variables (Docker). CLI 
 | `--host` | — | `HOST` | `127.0.0.1` | Bind address |
 | `--port` | `-p` | `PORT` | `8080` | Listen port |
 | `--libs-dir` | `-l` | `LIBS_DIR` | `libs` | Private installation root containing `runtime/` and `staging/` |
-| `--runtime-yt-dlp-version` | — | `RUNTIME_YTDLP_VERSION` | `2026.10.26` | Exact version for both the standalone binary and Python wheel; never `latest` |
+| `--runtime-yt-dlp-version` | — | `RUNTIME_YTDLP_VERSION` | `2026.10.26` | Initial version for both binary and wheel; same pin preserves explicit online updates; never `latest` |
 | `--runtime-python` | - | `RUNTIME_PYTHON` | unset | uv request; reuse validated interpreter on updates |
 | `--runtime-uv` | - | `RUNTIME_UV` | `uv` | Deployment-provided executable |
 | `--runtime-python-release` | - | `RUNTIME_PYTHON_RELEASE` | unset | Removed PBS input; boot rejects with migration guidance |
@@ -100,8 +129,9 @@ LIBS_DIR/                         # private to one instance, location-bound
 Installation completes before backend startup/listener binding. Explicit resident
 interpreter/script overrides still win but never bypass installation validation.
 Installed venv package paths come first; `--worker-python-path` appends extra paths.
-Worker version must equal the explicit runtime pin. No per-request uv calls,
-automatic latest, or periodic self-update are introduced.
+Worker version must equal the selected runtime version. Ordinary download
+requests do not invoke uv. Explicit `/run --update` requests discover and install
+the latest stable version; there is no background or periodic self-update.
 
 ### Python Ownership And Reuse
 
@@ -215,13 +245,19 @@ corrupt manifest. This is an operator-enforced precondition, not automatic locki
 leases, or shared-root multi-instance support. Give overlapping instances separate
 private roots instead of rolling replacements in the same root.
 
-Preparation acquires the binary and lets uv prepare/validate the candidate, then syncs its manifest
+For ordinary boot installation, preparation acquires the binary and lets uv prepare/validate the candidate, then syncs its manifest
 (and candidate directory on Unix) before touching the old runtime.
 **Preparation failure preserves old bytes but rejects boot.**
 After verification, publication invalidates the old manifest, removes the old tree,
 then renames the candidate into the now-absent `runtime/` path. On Unix the specified
 directory syncs also run; Windows sharing/permission failures are surfaced, not
-bypassed with copy-over. There is no saved old tree or restore transaction.
+bypassed with copy-over. This boot replacement has no saved old tree.
+
+Explicit online updates stop/await consumers inside the running service and
+rename the previous runtime to `update-backup/` before publication. Once the
+new backend starts, the backup is retired and removed. Before that commit point,
+failure or a subsequent boot restores the backup. This is a temporary update
+transaction, not a retained version history or a power-loss durability guarantee.
 
 Deletion plus rename is **not atomic** and does not promise old-or-new crash or
 power-loss durability. Failure or death after retirement starts may leave

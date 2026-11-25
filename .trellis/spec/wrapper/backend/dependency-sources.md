@@ -19,7 +19,8 @@
 
 - Boot prepares the runtime before admission. CLI executes the standalone
   yt-dlp binary; resident workers use isolated CPython subprocesses. Runtime
-  preparation must not move into a request handler or require rebuilding Rust.
+  preparation runs at boot or in the supervised installer subprocess for an
+  explicit `/run --update` request, never inside a Python worker.
 - Deployment supplies a pinned uv executable. uv owns interpreter discovery,
   Python downloads and package resolution; Rust owns binary integrity and
   environment publication. Do not maintain PBS version tables, download metadata
@@ -52,7 +53,15 @@
   compatible stable base for updates. Keep base interpreters outside replaceable
   runtime/staging trees, and pass the canonical installation root explicitly to
   validation. Directory basenames are not proof of ownership or publication state.
-- Fixed-root replacement still requires stop/await/start. It is not hot reload.
+- Fixed-root replacement requires stopping and awaiting its consumers. Online
+  updates hold an exclusive runtime lease, stop workers, use the existing CLI
+  process supervisor to contain the installer and its tools, then restart the
+  selected backend before admitting requests. Ordinary requests hold a shared
+  lease through supervised cleanup, independently of the HTTP handler.
+  Updates retain `update-backup/` until activation; recover uncommitted backups
+  at boot before reading online selection. Successful updates retain no history.
+  The manifest's online_update_from ties online selection to the deployment pin;
+  changing that pin wins, and same-version worker/recipe repairs preserve it.
   Prepare and verify before retiring the old runtime; clean only owned quiescent
   staging. Preserve binary transfer/integrity assertions when removing obsolete
   Python resolver tests. Reject unsupported legacy inputs with migration guidance.

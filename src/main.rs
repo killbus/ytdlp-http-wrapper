@@ -13,6 +13,8 @@ use ytdlp_http_wrapper::runtime_installer::{ensure_runtime, RuntimeConfig, Runti
 #[derive(Parser)]
 #[command(name = "ytdlp-http-wrapper", about = "HTTP wrapper for yt-dlp")]
 struct Cli {
+    #[arg(long, hide = true)]
+    prepare_online_update: bool,
     #[arg(
         long = "host",
         env = "HOST",
@@ -92,7 +94,7 @@ struct Cli {
     #[arg(
         long = "worker-yt-dlp-version",
         env = "WORKER_YTDLP_VERSION",
-        help = "Worker handshake version; defaults to and must equal the runtime yt-dlp pin"
+        help = "Expected worker version; follows the selected runtime version, including persisted online updates"
     )]
     worker_yt_dlp_version: Option<String>,
 
@@ -108,7 +110,7 @@ struct Cli {
         long = "runtime-yt-dlp-version",
         env = "RUNTIME_YTDLP_VERSION",
         default_value = "2026.10.26",
-        help = "Pinned yt-dlp version installed into the immutable runtime"
+        help = "Initial yt-dlp version; an unchanged pin preserves explicit online updates across restarts"
     )]
     runtime_yt_dlp_version: String,
 
@@ -187,8 +189,8 @@ fn build_backend(
     }
 }
 
-async fn install_runtime(cli: &Cli) -> Result<RuntimePaths, Box<dyn std::error::Error>> {
-    ensure_runtime(RuntimeConfig {
+fn runtime_config(cli: &Cli) -> RuntimeConfig {
+    RuntimeConfig {
         libs_dir: cli.libs_dir.clone(),
         plan_path: cli.runtime_plan.clone(),
         yt_dlp_version: cli.runtime_yt_dlp_version.clone(),
@@ -196,9 +198,7 @@ async fn install_runtime(cli: &Cli) -> Result<RuntimePaths, Box<dyn std::error::
         python_request: cli.runtime_python.clone(),
         uv_path: cli.runtime_uv.clone(),
         worker_yt_dlp_version: cli.worker_yt_dlp_version.clone(),
-    })
-    .await
-    .map_err(Into::into)
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -213,12 +213,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cli = Cli::parse();
+    if cli.prepare_online_update {
+        let result =
+            ytdlp_http_wrapper::runtime_installer::prepare_online_update(runtime_config(&cli))
+                .await?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
     info!(
         host = %cli.host,
         port = cli.port,
@@ -258,7 +265,26 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         return Err("temp-dir must be an existing directory".into());
     }
 
-    let runtime_paths = install_runtime(&cli).await?;
+    ytdlp_http_wrapper::runtime_installer::recover_online_update(&cli.libs_dir)?;
+    let mut update_config = runtime_config(&cli);
+    if let Some(request) = &mut update_config.python_request {
+        let path = std::path::Path::new(request);
+        if path.is_relative() && path.exists() {
+            *request = std::env::current_dir()?
+                .join(path)
+                .to_string_lossy()
+                .into_owned();
+        }
+    }
+    let effective_config =
+        ytdlp_http_wrapper::runtime_installer::persisted_config(update_config.clone());
+    let runtime_paths = ensure_runtime(effective_config.clone()).await?;
+    update_config.libs_dir = std::fs::canonicalize(&cli.libs_dir)?;
+    if update_config.uv_path.components().count() > 1 {
+        update_config.uv_path = std::env::current_dir()?.join(&update_config.uv_path);
+    }
+    cli.runtime_yt_dlp_version = effective_config.yt_dlp_version;
+    cli.worker_yt_dlp_version = effective_config.worker_yt_dlp_version;
     info!(
         runtime_id = %runtime_paths.runtime_id,
         binary = %runtime_paths.binary_path.display(),
@@ -272,7 +298,15 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_state = Arc::new(
         routes::AppState::new(runtime_paths.binary_path.clone(), max_concurrent, temp_dir)
-            .with_backend(backend.clone()),
+            .with_backend(backend.clone())
+            .with_updates(ytdlp_http_wrapper::online_update::UpdateConfig {
+                runtime: update_config,
+                pool_size: cli.worker_pool_size,
+                extra_python_paths: cli.worker_python_path.as_deref().map(std::env::split_paths).into_iter().flatten().collect(),
+                unsupported_reason: if cli.runtime_plan.is_some() || cli.worker_python.is_some() || cli.worker_path.is_some() {
+                    Some("Online updates require the managed runtime; remove RUNTIME_PLAN, WORKER_PYTHON and WORKER_PATH overrides first".into())
+                } else { None },
+            }, runtime_paths, cli.runtime_yt_dlp_version.clone()),
     );
 
     let app = routes::app(app_state.clone());
@@ -300,7 +334,7 @@ async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     }).await;
     app_state.begin_shutdown();
     app_state.wait_for_cleanup().await;
-    app_state.backend.shutdown().await;
+    app_state.stop_backend().await;
     server?;
 
     Ok(())
@@ -315,7 +349,6 @@ mod tests {
     use std::fs;
     use std::process::Command;
     use ytdlp_http_wrapper::backend::Backend;
-    use ytdlp_http_wrapper::runtime_installer::RuntimeInstallError;
 
     fn cli(args: &[&str]) -> Cli {
         // Keep in-process tests independent of the caller's service environment.
@@ -467,9 +500,8 @@ mod tests {
             let mut cli = cli(&["--backend", backend, "--worker-yt-dlp-version", "different"]);
             cli.libs_dir = root.path().join("not-created");
             cli.runtime_plan = Some(root.path().join("missing-plan.json"));
-            let error = install_runtime(&cli).await.unwrap_err();
+            let error = ensure_runtime(runtime_config(&cli)).await.unwrap_err();
             assert!(format!("{error:?}").contains("RUNTIME_VERSION_MISMATCH"));
-            let error = error.downcast_ref::<RuntimeInstallError>().unwrap();
             assert_eq!(error.code(), "RUNTIME_VERSION_MISMATCH");
             assert!(error.to_string().contains("attempt=1"));
             assert!(!cli.libs_dir.exists());

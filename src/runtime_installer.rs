@@ -3,8 +3,8 @@
 //! This module is a leaf owned by boot. It resolves and pins a yt-dlp binary,
 //! and delegates Python/environment preparation to uv in owned staging.
 //! Managed base interpreters have a stable private location outside `runtime/`.
-//! The private root requires stop/await/start deployment. Retirement followed
-//! by rename is not a crash-atomic transaction and retains no old runtime.
+//! Consumers must stop before replacement. Online updates retain a temporary
+//! backup until activation; boot recovers an interrupted uncommitted update.
 //!
 //! Rust owns binary integrity, publication and execution; uv owns Python and
 //! package resolution. No Python release discovery policy lives here.
@@ -118,7 +118,7 @@ pub struct RuntimeConfig {
     pub worker_yt_dlp_version: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RuntimePaths {
     pub binary_path: PathBuf,
     pub python_path: PathBuf,
@@ -241,6 +241,14 @@ fn install_with_retry(config: RuntimeConfig) -> Result<RuntimePaths> {
 }
 
 fn install_once(config: &RuntimeConfig, worker_script: &[u8]) -> Result<RuntimePaths> {
+    install_candidate(config, worker_script, None)
+}
+
+fn install_candidate(
+    config: &RuntimeConfig,
+    worker_script: &[u8],
+    online_from: Option<&str>,
+) -> Result<RuntimePaths> {
     validate_config(config)?;
     let root = install_root(&config.libs_dir)?;
     let destination = root.join("runtime");
@@ -300,12 +308,45 @@ fn install_once(config: &RuntimeConfig, worker_script: &[u8]) -> Result<RuntimeP
         plan.environment = probe_environment(&root, &staging.path, &plan.yt_dlp_version)?;
         let runtime_id = derive_runtime_id(&plan, &worker_hash)?;
         write_manifest(&staging.path, &plan, &runtime_id, &worker_hash)?;
+        let persisted_from = previous.as_ref().and_then(|manifest| {
+            (manifest["plan"]["yt_dlp_version"].as_str() == Some(&config.yt_dlp_version))
+                .then(|| manifest["online_update_from"].as_str())
+                .flatten()
+        });
+        if let Some(version) = online_from.or(persisted_from) {
+            let path = staging.path.join(MANIFEST_NAME);
+            let mut manifest = read_manifest(&staging.path)?;
+            manifest["online_update_from"] = json!(version);
+            let mut file =
+                File::create(&path).map_err(|e| publish_error("update-manifest", "old", e))?;
+            serde_json::to_writer_pretty(&mut file, &manifest)
+                .map_err(|e| publish_error("update-manifest", "old", e))?;
+            file.sync_all()
+                .map_err(|e| publish_error("update-manifest", "old", e))?;
+        }
         sync_directory(&staging.path, "candidate-sync", "old-or-absent")?;
         validate_runtime(&root, &staging.path, &plan, &runtime_id, &worker_hash)?;
+        if online_from.is_some() {
+            // Only the HTTP update coordinator may enter this path, after all
+            // consumers have stopped. Keep the old tree until worker startup.
+            let backup = root.join("update-backup");
+            if inspect_directory(&backup, &root)?.is_some() {
+                return Err(publish_error("backup", "old", "unfinished update exists"));
+            }
+            if inspect_directory(&destination, &root)?.as_ref() != original.as_ref() {
+                return Err(publish_error("backup", "unknown", "runtime changed"));
+            }
+            fs::rename(&destination, &backup).map_err(|e| publish_error("backup", "old", e))?;
+            sync_directory(&root, "backup-sync", "backup")?;
+        }
         publish(
             &mut staging,
             &destination,
-            original.as_ref(),
+            if online_from.is_some() {
+                None
+            } else {
+                original.as_ref()
+            },
             &plan,
             &runtime_id,
             &worker_hash,
@@ -325,6 +366,133 @@ fn install_once(config: &RuntimeConfig, worker_script: &[u8]) -> Result<RuntimeP
             Err(error)
         }
     }
+}
+
+/// Result emitted by the supervised installer subprocess, before activation.
+#[derive(Serialize, Deserialize)]
+pub struct OnlineUpdate {
+    pub previous_version: String,
+    pub version: String,
+    pub paths: RuntimePaths,
+}
+
+/// A completed online update follows the same deployment pin across restarts.
+/// Changing the configured pin explicitly starts a new selection instead.
+pub fn persisted_config(mut config: RuntimeConfig) -> RuntimeConfig {
+    if config.plan_path.is_none() {
+        if let Ok(manifest) = read_manifest(&config.libs_dir.join("runtime")) {
+            if manifest["online_update_from"].as_str() == Some(&config.yt_dlp_version) {
+                if let Some(version) = manifest["plan"]["yt_dlp_version"].as_str() {
+                    if config.worker_yt_dlp_version.as_deref() == Some(&config.yt_dlp_version) {
+                        config.worker_yt_dlp_version = Some(version.to_owned());
+                    }
+                    config.yt_dlp_version = version.to_owned();
+                }
+            }
+        }
+    }
+    config
+}
+
+fn stable_version(value: &str) -> Result<(u32, u32, u32)> {
+    let parts: Vec<_> = value.split('.').map(str::parse::<u32>).collect();
+    match parts.as_slice() {
+        [Ok(year), Ok(month), Ok(day)]
+            if *year >= 2000 && (1..=12).contains(month) && (1..=31).contains(day) =>
+        {
+            Ok((*year, *month, *day))
+        }
+        _ => Err(RuntimeInstallError::new(
+            RuntimeErrorCode::ResolveFailure,
+            "invalid stable yt-dlp version",
+        )),
+    }
+}
+
+/// Runs only in the installer subprocess; no active worker may use runtime/.
+pub async fn prepare_online_update(config: RuntimeConfig) -> Result<OnlineUpdate> {
+    tokio::task::spawn_blocking(move || {
+        validate_config(&config)?;
+        if config.plan_path.is_some() {
+            return Err(RuntimeInstallError::new(
+                RuntimeErrorCode::ConfigInvalid,
+                "online updates require official sources; remove RUNTIME_PLAN first",
+            ));
+        }
+        let root = install_root(&config.libs_dir)?;
+        let previous = read_manifest(&root.join("runtime"))?;
+        let previous_version = required_string(&previous["plan"], "yt_dlp_version")?.to_owned();
+        let metadata = curl_to_memory("https://pypi.org/pypi/yt-dlp/json", 4 * 1024 * 1024)?;
+        let metadata = parse_json(&metadata, "PyPI yt-dlp metadata")?;
+        let latest = stable_version(required_string(&metadata["info"], "version")?)?;
+        let current = stable_version(&previous_version)?;
+        let version = if latest > current {
+            format!("{:04}.{:02}.{:02}", latest.0, latest.1, latest.2)
+        } else {
+            previous_version.clone()
+        };
+        let mut target = config.clone();
+        target.yt_dlp_version = version.clone();
+        if target.worker_yt_dlp_version.is_some() {
+            target.worker_yt_dlp_version = Some(version.clone());
+        }
+        let paths = install_candidate(&target, WORKER_SCRIPT, Some(&config.yt_dlp_version))?;
+        Ok(OnlineUpdate {
+            previous_version,
+            version,
+            paths,
+        })
+    })
+    .await
+    .map_err(|e| RuntimeInstallError::new(RuntimeErrorCode::StagingFailure, e))?
+}
+
+/// Roll back an unacknowledged update, including one interrupted by service death.
+/// The private root remains exclusive to one wrapper instance.
+pub fn recover_online_update(libs_dir: &Path) -> Result<()> {
+    let root = install_root(libs_dir)?;
+    let backup = root.join("update-backup");
+    if inspect_directory(&backup, &root)?.is_none() {
+        return Ok(());
+    }
+    // Never remove a candidate unless a complete previous manifest exists.
+    read_manifest(&backup)?;
+    let destination = root.join("runtime");
+    if inspect_directory(&destination, &root)?.is_some() {
+        remove_tree_entry(&destination, &root)
+            .map_err(|e| publish_error("rollback-remove", "backup", e))?;
+    }
+    fs::rename(&backup, &destination)
+        .map_err(|e| publish_error("rollback-restore", "backup", e))?;
+    sync_directory(&root, "rollback-sync", "old")
+}
+
+pub fn finish_online_update(libs_dir: &Path) -> Result<()> {
+    let root = install_root(libs_dir)?;
+    let backup = root.join("update-backup");
+    if inspect_directory(&backup, &root)?.is_some() {
+        // Rename is the commit point. A crash during deletion must not turn a
+        // partially deleted old tree into a rollback source on the next boot.
+        let retired = root.join(format!("update-retired-{}", std::process::id()));
+        if retired.exists() {
+            return Err(publish_error(
+                "update-commit",
+                "candidate",
+                "retired path already exists",
+            ));
+        }
+        fs::rename(&backup, &retired)
+            .map_err(|e| publish_error("update-commit", "candidate", e))?;
+        if let Err(error) = sync_directory(&root, "update-commit-sync", "candidate") {
+            fs::rename(&retired, &backup)
+                .map_err(|e| publish_error("update-commit-restore", "unknown", e))?;
+            return Err(error);
+        }
+        if let Err(error) = remove_tree_entry(&retired, &root) {
+            tracing::warn!(path = %retired.display(), %error, "updated runtime active; retired runtime cleanup failed");
+        }
+    }
+    Ok(())
 }
 
 fn validate_config(config: &RuntimeConfig) -> Result<()> {
@@ -1939,6 +2107,83 @@ mod tests {
                 serde_json::from_slice(&fs::read(plan_path).unwrap()).unwrap();
             plan["artifacts"][0]["sha256"] = json!(sha256_hex(&fs::read(path).unwrap()));
             fs::write(plan_path, plan.to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn online_update_restores_old_runtime_until_committed() {
+        let fixture = Fixture::new();
+        let old = fixture.install(WORKER_SCRIPT);
+        let original = snapshot(&fixture.root().join("runtime"));
+        fixture.replace_binary();
+        let candidate =
+            install_candidate(&fixture.config, WORKER_SCRIPT, Some("2026.09.01")).unwrap();
+        assert_ne!(old.runtime_id, candidate.runtime_id);
+        assert!(fixture.root().join("update-backup").is_dir());
+        recover_online_update(&fixture.config.libs_dir).unwrap();
+        assert_eq!(original, snapshot(&fixture.root().join("runtime")));
+        assert!(!fixture.root().join("update-backup").exists());
+        let candidate =
+            install_candidate(&fixture.config, WORKER_SCRIPT, Some("2026.09.01")).unwrap();
+        finish_online_update(&fixture.config.libs_dir).unwrap();
+        recover_online_update(&fixture.config.libs_dir).unwrap();
+        assert_eq!(
+            read_manifest(&fixture.root().join("runtime")).unwrap()["runtime_id"],
+            candidate.runtime_id
+        );
+        assert!(!fixture.root().join("update-backup").exists());
+        fixture.no_staging();
+    }
+
+    #[test]
+    fn online_update_failure_after_backup_can_be_recovered() {
+        let fixture = Fixture::new();
+        fixture.install(WORKER_SCRIPT);
+        let original = snapshot(&fixture.root().join("runtime"));
+        fixture.replace_binary();
+        let _reset = inject(None, vec!["rename"]);
+        assert!(install_candidate(&fixture.config, WORKER_SCRIPT, Some("2026.09.01")).is_err());
+        assert!(!fixture.root().join("runtime").exists());
+        recover_online_update(&fixture.config.libs_dir).unwrap();
+        assert_eq!(original, snapshot(&fixture.root().join("runtime")));
+    }
+
+    #[test]
+    fn online_update_selection_survives_restart_and_worker_recipe_changes() {
+        let fixture = Fixture::new();
+        fixture.install(WORKER_SCRIPT);
+        fixture.replace_binary();
+        install_candidate(&fixture.config, WORKER_SCRIPT, Some("2026.09.01")).unwrap();
+        finish_online_update(&fixture.config.libs_dir).unwrap();
+        let mut boot = fixture.config.clone();
+        boot.plan_path = None;
+        boot.yt_dlp_version = "2026.09.01".into();
+        boot.worker_yt_dlp_version = Some(boot.yt_dlp_version.clone());
+        let resolved = persisted_config(boot.clone());
+        assert_eq!(resolved.yt_dlp_version, "2026.09.23");
+        assert_eq!(
+            resolved.worker_yt_dlp_version.as_deref(),
+            Some("2026.09.23")
+        );
+        fixture.install(b"# changed embedded worker\n");
+        assert_eq!(persisted_config(boot.clone()).yt_dlp_version, "2026.09.23");
+        boot.yt_dlp_version = "2026.09.02".into();
+        assert_eq!(persisted_config(boot).yt_dlp_version, "2026.09.02");
+    }
+
+    #[test]
+    fn online_update_versions_compare_numerically_and_normalize_pypi_dates() {
+        assert_eq!(stable_version("2026.9.3").unwrap(), (2026, 9, 3));
+        assert!(stable_version("2026.10.01").unwrap() > stable_version("2026.9.30").unwrap());
+        for invalid in [
+            "latest",
+            "2026.10.1.dev0",
+            "2026.13.1",
+            "2026.0.1",
+            "2026.10.0",
+            "../2026.10.1",
+        ] {
+            assert!(stable_version(invalid).is_err());
         }
     }
 
